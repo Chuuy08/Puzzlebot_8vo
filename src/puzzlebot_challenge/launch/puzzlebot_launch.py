@@ -71,8 +71,12 @@ def generate_launch_description():
         parameters=[{
         # 'x_goal': 2.0,
         # 'y_goal': 0.0,
-        'Kd': 0.25,
-        'Ktheta': 1.8,
+        'Kp_d': 0.25,
+        'Ki_d': 0.0,
+        'Kd_d': 0.0,
+        'Kp_theta': 1.8,
+        'Ki_theta': 0.0,
+        'Kd_theta': 0.0,
         'threshold': 0.1,
         'sampling_time': 0.05,
     }]  

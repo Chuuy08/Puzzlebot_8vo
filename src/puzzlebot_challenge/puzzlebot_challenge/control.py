@@ -14,8 +14,12 @@ class Control(Node):
         super().__init__('control')
         # self.declare_parameter('x_goal', 2.0)
         # self.declare_parameter('y_goal',0.0)
-        self.declare_parameter('Kd',0.3)
-        self.declare_parameter('Ktheta', 0.6)
+        self.declare_parameter('Kp_d',0.3)
+        self.declare_parameter('Ki_d',0.0)
+        self.declare_parameter('Kd_d',0.0)
+        self.declare_parameter('Kp_theta', 0.6)
+        self.declare_parameter('Ki_theta',0.0)
+        self.declare_parameter('Kd_theta',0.0)
         self.declare_parameter('threshold', 0.1) # 10 cm
         self.declare_parameter('sampling_time', 0.05)
         self.declare_parameter('v_max', 0.2)
@@ -23,8 +27,12 @@ class Control(Node):
 
         # self.x_goal = self.get_parameter('x_goal').value
         # self.y_goal = self.get_parameter('y_goal').value
-        self.Kd = self.get_parameter('Kd').value
-        self.Ktheta = self.get_parameter('Ktheta').value
+        self.Kp_d = self.get_parameter('Kp_d').value
+        self.Ki_d = self.get_parameter('Ki_d').value
+        self.Kd_d = self.get_parameter('Kd_d').value
+        self.Kp_theta = self.get_parameter('Kp_theta').value
+        self.Ki_theta = self.get_parameter('Ki_theta').value
+        self.Kd_theta = self.get_parameter('Kd_theta').value
         self.threshold = self.get_parameter('threshold').value
         self.dt = self.get_parameter('sampling_time').value
         self.v_max = self.get_parameter('v_max').value
@@ -42,6 +50,18 @@ class Control(Node):
         self.goal_reached = False 
         self._log_count = 0 
 
+        # 
+        self.v_prev=0.0
+        self.w_prev=0.0
+
+        # Errores previos
+        self.ed_prev = 0.0
+        self.etheta_prev = 0.0
+
+        # Integrales
+        self.ed_int = 0.0
+        self.etheta_int = 0.0    
+
         # Subscripcion 
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.create_subscription(Vector3,'set_point',self.set_point_callback,10)
@@ -54,9 +74,10 @@ class Control(Node):
         self.create_timer(self.dt, self.timer_callback)
 
         self.get_logger().info(
-            f'Control listo | Kd={self.Kd} | Ktheta={self.Ktheta} | '
+            f'Control listo | Kp_d={self.Kp_d} | Kp_theta={self.Kp_theta} | '
             f'umbral={self.threshold} m | esperando /set_point...'
         )
+        
     # Callback odometry    
     def odom_callback(self, msg: Odometry):
         self.xr = msg.pose.pose.position.x
@@ -113,14 +134,44 @@ class Control(Node):
         # Error de angulo
         angle_to_goal = math.atan2(ey, ex)
         etheta = wrap_to_pi(angle_to_goal - self.thetar)
+
+
+        # Control
+
+        # Derivadas
+        ded = (ed - self.ed_prev) / self.dt
+        detheta = wrap_to_pi(etheta - self.etheta_prev) / self.dt
+
+        # Integrales
+        if abs(self.v_prev) < self.v_max:
+            self.ed_int += ed * self.dt
+
+        if abs(self.w_prev) < self.w_max:
+            self.etheta_int += etheta * self.dt
         
-        # Control proporcional
-        v = self.Kd * ed
-        w = self.Ktheta * etheta
+        # Antiwindup
+        limit_int = 1.0
+        self.ed_int = max(-limit_int, min(limit_int, self.ed_int))
+        self.etheta_int = max(-limit_int, min(limit_int, self.etheta_int))
+
+        # Control PID 
+        v = self.Kp_d * ed + self.Ki_d * self.ed_int + self.Kd_d * ded
+        w = self.Kp_theta * etheta + self.Ki_theta * self.etheta_int + self.Kd_theta * detheta
+
+        # Suavizado de la velocidad
+        v = v * math.cos(etheta)
+
+        # Actualizar errores anteriores
+        self.ed_prev = ed
+        self.etheta_prev = etheta
 
         # Saturation
         V = max(-self.v_max, min(self.v_max, v))
         w = max(-self.w_max, min(self.w_max, w))
+
+        # Control del acelerador
+        self.v_prev = V
+        self.w_prev = w
 
         # Publicar comandos 
         cmd = Twist()

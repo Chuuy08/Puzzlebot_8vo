@@ -94,9 +94,16 @@ def generate_launch_description():
         namespace='robot1',
         output='screen',
         parameters=[{
-            'Kd': 0.3, 'Ktheta': 0.6,
-            'threshold': 0.1, 'sampling_time': 0.05,
-            'v_max': 0.2, 'w_max': 1.0,
+            'Kp_d': 0.25,
+            'Ki_d': 0.0,
+            'Kd_d': 0.0,
+            'Kp_theta': 1.8,
+            'Ki_theta': 0.0,
+            'Kd_theta': 0.0,
+            'threshold': 0.1, 
+            'sampling_time': 0.05,
+            'v_max': 0.2, 
+            'w_max': 1.0,
         }]
     )
 
@@ -157,9 +164,16 @@ def generate_launch_description():
         namespace='robot2',
         output='screen',
         parameters=[{
-            'Kd': 0.3, 'Ktheta': 0.6,
-            'threshold': 0.1, 'sampling_time': 0.05,
-            'v_max': 0.2, 'w_max': 1.0,
+            'Kp_d': 0.25,
+            'Ki_d': 0.0,
+            'Kd_d': 0.0,
+            'Kp_theta': 1.8,
+            'Ki_theta': 0.0,
+            'Kd_theta': 0.0,
+            'threshold': 0.1, 
+            'sampling_time': 0.05,
+            'v_max': 0.2, 
+            'w_max': 1.0,
         }]
     )
 
