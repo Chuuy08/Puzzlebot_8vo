@@ -1,0 +1,47 @@
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
+
+def generate_launch_description():
+
+    static_transform_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['2', '1', '0', '0', '0', '0', 'map', 'odom'] 
+    )
+
+    stattic_transform_node_2 = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['0', '0', '0', '0', '0', '0', 'world', 'map'] 
+    )
+
+    drone_transform_node = Node(
+        name='puzzledrone',
+        package='markers',
+        executable='PuzzleDrone',
+    )
+
+    rviz_config = os.path.join(
+        get_package_share_directory('markers'),
+        'rviz',
+        'config.rviz'
+    )
+
+    rviz_node = Node(
+        name='rviz',
+        package='rviz2',
+        executable='rviz2',
+        arguments=['-d', rviz_config]
+    )
+
+    rqt_tf_tree_node = Node(
+        name='rqt_tf_tree',
+        package='rqt_tf_tree',
+        executable='rqt_tf_tree',
+    )
+
+    l_d = LaunchDescription([static_transform_node, stattic_transform_node_2, drone_transform_node, rviz_node, rqt_tf_tree_node])
+
+    return l_d
