@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'puzzlebot_challenge'
+package_name = 'puzzlebot_localisation'
 
 setup(
     name=package_name,
@@ -23,8 +23,8 @@ setup(
     zip_safe=True,
     maintainer='jesus',
     maintainer_email='gonzalez.garcia.albertojesus@gmail.com',
-    description='URDFLink Examples',
-    license='Apache-2.0',
+    description='TODO: Package description',
+    license='TODO: License declaration',
     extras_require={
         'test': [
             'pytest',
@@ -32,8 +32,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'puzzlebot = puzzlebot_challenge.puzzlebot:main',
-            'puzzlebot_kinematic = puzzlebot_challenge.puzzlebot_kinematic:main',
+            'localisation = puzzlebot_localisation.localisation:main',
+            'mcl_node = puzzlebot_localisation.mcl_node:main',
         ],
     },
 )

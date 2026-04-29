@@ -1,8 +1,7 @@
 from setuptools import find_packages, setup
 import os
 from glob import glob
-
-package_name = 'puzzlebot_challenge'
+package_name = 'puzzlebot_control'
 
 setup(
     name=package_name,
@@ -23,8 +22,8 @@ setup(
     zip_safe=True,
     maintainer='jesus',
     maintainer_email='gonzalez.garcia.albertojesus@gmail.com',
-    description='URDFLink Examples',
-    license='Apache-2.0',
+    description='TODO: Package description',
+    license='TODO: License declaration',
     extras_require={
         'test': [
             'pytest',
@@ -32,8 +31,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'puzzlebot = puzzlebot_challenge.puzzlebot:main',
-            'puzzlebot_kinematic = puzzlebot_challenge.puzzlebot_kinematic:main',
+            'control = puzzlebot_control.control:main',
+            'set_poin_generator = puzzlebot_control.set_poin_generator:main'
         ],
     },
 )

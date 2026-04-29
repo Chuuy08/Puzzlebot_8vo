@@ -18,7 +18,7 @@
     <visual>
       <origin rpy="1.5708 0 1.5708" xyz="0 0 0.05" />
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/chassis.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/chassis.stl"/>
       </geometry>
       <material name="white">
         <color rgba="1.0 1.0 1.0 1.0"/>
@@ -27,7 +27,7 @@
     <collision>
       <origin rpy="1.5708 0 1.5708" xyz="0 0 0.05" />
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/chassis.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/chassis.stl"/>
       </geometry>
     </collision>
 
@@ -42,7 +42,7 @@
     <visual>
       <origin xyz="0.0 0 0.0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/LiDAR.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://puzzlebot_description/meshes/LiDAR.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 0 1.0"/>
@@ -51,7 +51,7 @@
     <collision>
       <origin xyz="0.045 0 0.0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/LiDAR.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://puzzlebot_description/meshes/LiDAR.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -65,7 +65,7 @@
     <visual>
       <origin rpy="0 1.5708 -1.5708" xyz="0.0 0.0 0.0"/>
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/wheel.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/wheel.stl"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 0 1.0"/>
@@ -74,7 +74,7 @@
     <collision>
       <origin rpy="0 1.5708 -1.5708" xyz="0.0 0.0 0.0" />
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/wheel.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/wheel.stl"/>
       </geometry>
       <surface>
         <friction>
@@ -96,7 +96,7 @@
     <visual>
       <origin rpy="0 -1.5708 -1.5708" xyz="0.0 0.0 0.0"/>
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/wheel.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/wheel.stl"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 0 1.0"/>
@@ -105,7 +105,7 @@
     <collision>
       <origin rpy="0 -1.5708 -1.5708" xyz="0.0 0.0 0.0" />
       <geometry>
-        <mesh filename="package://puzzlebot_challenge/meshes/wheel.stl"/>
+        <mesh filename="package://puzzlebot_description/meshes/wheel.stl"/>
       </geometry>
       <surface>
         <friction>

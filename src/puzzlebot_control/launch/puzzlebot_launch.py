@@ -19,7 +19,7 @@ def generate_launch_description():
 
     urdf_file_name = 'model.urdf'
     urdf = os.path.join(
-        get_package_share_directory('puzzlebot_challenge'),
+        get_package_share_directory('puzzlebot_description'),
         'urdf',
         urdf_file_name)
         
@@ -37,7 +37,7 @@ def generate_launch_description():
 
     # Nodo 2: localisation
     localisation_node = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_localisation',
         executable='localisation',
         name='localisation',
         output='screen',
@@ -46,7 +46,7 @@ def generate_launch_description():
 
     # Nodo 3: Joint_state_publisher
     joint_state_node = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_description',
         executable='joint_state_publisher',
         name='joint_state_publisher',
         output='screen',
@@ -64,7 +64,7 @@ def generate_launch_description():
 
     # Nodo 5 : Control
     control_node = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='control',
         name='control',
         output='screen',
@@ -84,7 +84,7 @@ def generate_launch_description():
 
     # Nodo 6: Setpoint Generator
     setpoint_generator_node = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='set_poin_generator',
         name='setpoint_generator',
         output='screen',

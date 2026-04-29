@@ -14,7 +14,7 @@
           <visual>
                 <origin xyz="0.060898 0 0.1" rpy="1.5708 0 3.1416"/>
                 <geometry>
-                 <mesh filename="package://puzzlebot_challenge/meshes/MCR2_puzzlebot_jetson_lidar_base.stl"/>  
+                 <mesh filename="package://puzzlebot_description/meshes/MCR2_puzzlebot_jetson_lidar_base.stl"/>  
                 </geometry>
                 <material name="yellow">
                  <color rgba="0.8 0.8 0.05 1.0"/>
@@ -26,7 +26,7 @@
           <visual>
                 <origin xyz="0.055 -0.0106 0" rpy="1.5708 0 0"/>
                 <geometry>
-                 <mesh filename="package://puzzlebot_challenge/meshes/MCR2_wheel.stl"/>  
+                 <mesh filename="package://puzzlebot_description/meshes/MCR2_wheel.stl"/>  
                 </geometry>
                 <material name="yellow">
                  <color rgba="0.8 0.8 0.05 1.0"/>
@@ -38,7 +38,7 @@
           <visual>
                 <origin xyz="0.055 0.0106 0" rpy="-1.5708 0 0"/>
                 <geometry>
-                 <mesh filename="package://puzzlebot_challenge/meshes/MCR2_wheel.stl"/>  
+                 <mesh filename="package://puzzlebot_description/meshes/MCR2_wheel.stl"/>  
                 </geometry>
                 <material name="yellow">
                  <color rgba="0.8 0.8 0.05 1.0"/>
@@ -50,7 +50,7 @@
           <visual>
                 <origin xyz="0 0 -0.00836" rpy="0 0 0"/>
                 <geometry>
-                 <mesh filename="package://puzzlebot_challenge/meshes/MCR2_caster_wheel.stl"/>  
+                 <mesh filename="package://puzzlebot_description/meshes/MCR2_caster_wheel.stl"/>  
                 </geometry>
                 <material name="yellow">
                  <color rgba="0.8 0.8 0.05 1.0"/>

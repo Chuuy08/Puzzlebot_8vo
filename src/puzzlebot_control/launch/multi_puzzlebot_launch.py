@@ -19,7 +19,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
     urdf_path = os.path.join(
-        get_package_share_directory('puzzlebot_challenge'),
+        get_package_share_directory('puzzlebot_description'),
         'urdf',
         'model.urdf'
     )
@@ -70,7 +70,7 @@ def generate_launch_description():
     )
 
     r1_localisation = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_localisation',
         executable='localisation',
         name='localisation',
         namespace='robot1',
@@ -79,7 +79,7 @@ def generate_launch_description():
     )
 
     r1_joint_state = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_description',
         executable='joint_state_publisher',
         name='joint_state_publisher',
         namespace='robot1',
@@ -88,7 +88,7 @@ def generate_launch_description():
     )
 
     r1_control = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='control',
         name='control',
         namespace='robot1',
@@ -108,7 +108,7 @@ def generate_launch_description():
     )
 
     r1_setpoint = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='set_poin_generator',
         name='set_poin_generator',
         namespace='robot1',
@@ -140,7 +140,7 @@ def generate_launch_description():
     )
 
     r2_localisation = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_localisation',
         executable='localisation',
         name='localisation',
         namespace='robot2',
@@ -149,7 +149,7 @@ def generate_launch_description():
     )
 
     r2_joint_state = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_description',
         executable='joint_state_publisher',
         name='joint_state_publisher',
         namespace='robot2',
@@ -158,7 +158,7 @@ def generate_launch_description():
     )   
 
     r2_control = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='control',
         name='control',
         namespace='robot2',
@@ -178,7 +178,7 @@ def generate_launch_description():
     )
 
     r2_setpoint = Node(
-        package='puzzlebot_challenge',
+        package='puzzlebot_control',
         executable='set_poin_generator',
         name='set_poin_generator',
         namespace='robot2',
