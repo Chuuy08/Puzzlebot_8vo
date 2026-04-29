@@ -15,9 +15,10 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'config'), glob(os.path.join('config', '*.[yma]*'))),
         (os.path.join('share', package_name, 'rviz'), glob(os.path.join('rviz', '*.rviz'))),
-        (os.path.join('share', package_name, 'meshes'), glob(os.path.join('meshes', '*.stl'))),
-        (os.path.join('share', package_name, 'urdf'), glob(os.path.join('urdf', '*.urdf'))),
-
+        (os.path.join('share', package_name, 'models/urdf'), glob(os.path.join('models/urdf', '*.urdf'))),
+        (os.path.join('share', package_name, 'models/meshes'), glob(os.path.join('models/meshes', '*.stl'))),
+        (os.path.join('share', package_name, 'models/worlds'), glob(os.path.join('models/worlds', '*.sdf'))),
+        (os.path.join('share', package_name, 'models/plugins'), glob(os.path.join('models/plugins', '*.so'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

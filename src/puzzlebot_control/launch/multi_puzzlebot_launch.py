@@ -20,6 +20,7 @@ def generate_launch_description():
 
     urdf_path = os.path.join(
         get_package_share_directory('puzzlebot_description'),
+        'models',
         'urdf',
         'model.urdf'
     )
