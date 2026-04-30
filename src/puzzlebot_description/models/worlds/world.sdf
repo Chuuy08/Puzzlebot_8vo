@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.8">
-    <world name="worlds">
+    <world name="track_world">
         <physics name="1ms" type="ignored">
             <max_step_size>0.001</max_step_size>
             <real_time_factor>1.0</real_time_factor>
@@ -65,12 +65,9 @@
             </link>
         </model>
 
+
         <include>
-            <uri>model://puzzlebot</uri>
-            <pose>0.0 0 0.0 0 0 0</pose>
-        </include>
-        <include>
-            <uri>model://track</uri>
+            <uri>model://map</uri>
             <pose>-0.79 4.59 3.17 -2.48 -0.12 0.76</pose>
         </include>
     </world>

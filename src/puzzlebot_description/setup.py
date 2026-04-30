@@ -19,6 +19,9 @@ setup(
         (os.path.join('share', package_name, 'models/meshes'), glob(os.path.join('models/meshes', '*.stl'))),
         (os.path.join('share', package_name, 'models/worlds'), glob(os.path.join('models/worlds', '*.sdf'))),
         (os.path.join('share', package_name, 'models/plugins'), glob(os.path.join('models/plugins', '*.so'))),
+        (os.path.join('share', package_name, 'models/map'), glob(os.path.join('models/map', '*.sdf'))),
+        (os.path.join('share', package_name, 'models/map'), glob(os.path.join('models/map', '*.config'))),
+        (os.path.join('share', package_name, 'models/map/meshes'), glob(os.path.join('models/map/meshes', '*.stl'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -33,7 +36,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'joint_state_publisher = puzzlebot_description.joint_state_publisher:main'
+            'joint_state_publisher = puzzlebot_description.joint_state_publisher:main',
+            'map_pub = puzzlebot_description.map_pub:main'
         ],
     },
 )
