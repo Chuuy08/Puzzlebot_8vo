@@ -38,8 +38,7 @@ class JointStatePublisher(Node):
         js = JointState()
         js.header.stamp = self.get_clock().now().to_msg()
         # Sin prefijo — frame_prefix en robot_state_publisher ya lo maneja
-        #js.name     = ['wheel_r_joint', 'wheel_l_joint']
-        js.name     = ['right_wheel_joint', 'left_wheel_joint']
+        js.name     = ['wheel_right_joint', 'wheel_left_joint']
         js.position = [self.theta_r, self.theta_l]
         js.velocity = [self.wr, self.wl]
         self.joint_pub.publish(js)

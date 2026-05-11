@@ -15,29 +15,23 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'config'), glob(os.path.join('config', '*.[yma]*'))),
         (os.path.join('share', package_name, 'rviz'), glob(os.path.join('rviz', '*.rviz'))),
-        (os.path.join('share', package_name, 'models/urdf'), glob(os.path.join('models/urdf', '*.urdf'))),
-        (os.path.join('share', package_name, 'models/meshes'), glob(os.path.join('models/meshes', '*.stl'))),
-        (os.path.join('share', package_name, 'models/worlds'), glob(os.path.join('models/worlds', '*.sdf'))),
-        (os.path.join('share', package_name, 'models/plugins'), glob(os.path.join('models/plugins', '*.so'))),
-        (os.path.join('share', package_name, 'models/map'), glob(os.path.join('models/map', '*.sdf'))),
-        (os.path.join('share', package_name, 'models/map'), glob(os.path.join('models/map', '*.config'))),
-        (os.path.join('share', package_name, 'models/map/meshes'), glob(os.path.join('models/map/meshes', '*.stl'))),
+    ] + [
+        (os.path.join('share', package_name, root), [os.path.join(root, file)])
+        for root, _, files in os.walk('urdf') for file in files
+    ] + [
+        (os.path.join('share', package_name, root), [os.path.join(root, file)])
+        for root, _, files in os.walk('meshes') for file in files
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='jesus',
     maintainer_email='gonzalez.garcia.albertojesus@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    description='Puzzlebot Description Files',
+    license='Apache-2.0',
+    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'joint_state_publisher = puzzlebot_description.joint_state_publisher:main',
-            'map_pub = puzzlebot_description.map_pub:main'
         ],
     },
 )

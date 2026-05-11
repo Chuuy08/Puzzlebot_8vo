@@ -2,33 +2,28 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
 
-    # Parametros ambos robots
     robot_params = {
         'wheel_radius':  0.05,
         'wheel_base':    0.19,
         'sampling_time': 0.05,
     }
 
-    # URDF
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
     urdf_path = os.path.join(
         get_package_share_directory('puzzlebot_description'),
-        'models',
-        'urdf',
-        'model.urdf'
-    )
-    with open(urdf_path, 'r') as f:
-        robot_desc_base = f.read()
+        'urdf', 'mcr2_robots',
+        'puzzlebot_jetson_lidar_ed.xacro')
 
+    robot_desc = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
 
-    # TFs estáticos globales
     static_tf_world_map = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -47,6 +42,7 @@ def generate_launch_description():
                    '--frame-id', 'map', '--child-frame-id', 'odom']
     )
 
+    # Robot 1
     r1_robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -55,12 +51,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time':      use_sim_time,
-            'robot_description': robot_desc_base,
-            'frame_prefix':            'robot1/',
+            'robot_description': robot_desc,
+            'frame_prefix':      'robot1/',
         }]
     )
 
-    # Robot 1
     r1_kinematic = Node(
         package='puzzlebot_challenge',
         executable='puzzlebot_kinematic',
@@ -101,9 +96,9 @@ def generate_launch_description():
             'Kp_theta': 1.8,
             'Ki_theta': 0.0,
             'Kd_theta': 0.0,
-            'threshold': 0.1, 
+            'threshold': 0.1,
             'sampling_time': 0.05,
-            'v_max': 0.2, 
+            'v_max': 0.2,
             'w_max': 1.0,
         }]
     )
@@ -117,6 +112,7 @@ def generate_launch_description():
         parameters=[{'trajectory': 'square', 'side_length': 1.0, 'loop': False}]
     )
 
+    # Robot 2
     r2_robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -125,12 +121,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time':      use_sim_time,
-            'robot_description': robot_desc_base,
-            'frame_prefix':            'robot2/',
+            'robot_description': robot_desc,
+            'frame_prefix':      'robot2/',
         }]
     )
 
-    # Robot 2
     r2_kinematic = Node(
         package='puzzlebot_challenge',
         executable='puzzlebot_kinematic',
@@ -156,7 +151,7 @@ def generate_launch_description():
         namespace='robot2',
         output='screen',
         parameters=[{'sampling_time': robot_params['sampling_time']}]
-    )   
+    )
 
     r2_control = Node(
         package='puzzlebot_control',
@@ -171,9 +166,9 @@ def generate_launch_description():
             'Kp_theta': 1.8,
             'Ki_theta': 0.0,
             'Kd_theta': 0.0,
-            'threshold': 0.1, 
+            'threshold': 0.1,
             'sampling_time': 0.05,
-            'v_max': 0.2, 
+            'v_max': 0.2,
             'w_max': 1.0,
         }]
     )
@@ -193,7 +188,6 @@ def generate_launch_description():
         'two_robots.rviz'
     )
 
-    # Visualización
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -214,11 +208,9 @@ def generate_launch_description():
             default_value='false',
             description='Use simulation clock if true'),
 
-        # TFs globales
         static_tf_world_map,
         static_tf_map_odom,
 
-        # Robot 1
         r1_robot_state_pub,
         r1_kinematic,
         r1_localisation,
@@ -226,7 +218,6 @@ def generate_launch_description():
         r1_control,
         r1_setpoint,
 
-        # Robot 2
         r2_robot_state_pub,
         r2_kinematic,
         r2_localisation,
@@ -234,7 +225,6 @@ def generate_launch_description():
         r2_control,
         r2_setpoint,
 
-        # Visualización
         rqt_tf_tree_node,
         rviz_node,
     ])

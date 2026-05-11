@@ -84,8 +84,7 @@ class Localisation(Node):
         odom_msg = Odometry()
         odom_msg.header.stamp = current_time
         odom_msg.header.frame_id = self.odom_frame
-        #odom_msg.child_frame_id = f'{self.namespace}/base_footprint'
-        odom_msg.child_frame_id = f'{self.namespace}/base_link'
+        odom_msg.child_frame_id = f'{self.namespace}/base_footprint'
 
         # Pose
         odom_msg.pose.pose.position.x = self.sx
@@ -107,8 +106,7 @@ class Localisation(Node):
         tf_msg = TransformStamped()
         tf_msg.header.stamp = current_time
         tf_msg.header.frame_id = self.odom_frame
-        #tf_msg.child_frame_id = f'{self.namespace}/base_footprint'
-        tf_msg.child_frame_id = f'{self.namespace}/base_link'
+        tf_msg.child_frame_id = f'{self.namespace}/base_footprint'
 
 
         tf_msg.transform.translation.x = self.sx
