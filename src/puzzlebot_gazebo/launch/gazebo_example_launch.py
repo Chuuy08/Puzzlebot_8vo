@@ -154,10 +154,22 @@ def generate_launch_description():
     
 
  
+    joint_vel_bridge_node = Node(
+        package='puzzlebot_description',
+        executable='joint_vel_bridge',
+        name='joint_vel_bridge',
+        output='screen',
+        parameters=[{
+            'prefix': '',
+            'use_sim_time': use_sim_time,
+        }]
+    )
+
     l_d = [
-        declare_x_arg, declare_y_arg, declare_th_arg, declare_sim_time_arg, declare_pause_arg, declare_camera_frame_arg, 
-        declare_tof_frame_arg, declare_lidar_frame_arg, set_gazebo_resources, set_gazebo_plugins, 
-        robot_state_publisher_node,start_gazebo_server_run, start_gazebo_server_paused, spawn_robot, start_gazebo_ros_bridge_cmd]
+        declare_x_arg, declare_y_arg, declare_th_arg, declare_sim_time_arg, declare_pause_arg, declare_camera_frame_arg,
+        declare_tof_frame_arg, declare_lidar_frame_arg, set_gazebo_resources, set_gazebo_plugins,
+        robot_state_publisher_node, start_gazebo_server_run, start_gazebo_server_paused, spawn_robot,
+        start_gazebo_ros_bridge_cmd, joint_vel_bridge_node]
 
     # Conditionally add the image bridge
     if start_gazebo_ros_image_bridge_cmd:

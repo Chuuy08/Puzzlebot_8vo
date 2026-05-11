@@ -32,6 +32,7 @@ setup(
     entry_points={
         'console_scripts': [
             'joint_state_publisher = puzzlebot_description.joint_state_publisher:main',
+            'joint_vel_bridge = puzzlebot_description.joint_vel_bridge:main',
         ],
     },
 )
