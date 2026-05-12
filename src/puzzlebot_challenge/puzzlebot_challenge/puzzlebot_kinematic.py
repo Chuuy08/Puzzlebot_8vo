@@ -23,6 +23,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped
 from std_msgs.msg import Float32
 import math
+import numpy as np
 
 
 class PuzzleBotKinematic(Node):
@@ -37,10 +38,14 @@ class PuzzleBotKinematic(Node):
         self.declare_parameter('x0', 0.0)
         self.declare_parameter('y0', 0.0)
         self.declare_parameter('theta0', 0.0)
+        self.declare_parameter('k_r', 0.016)  # right encoder noise coefficient
+        self.declare_parameter('k_l', 0.016)  # left encoder noise coefficient
         
         self.r = self.get_parameter('wheel_radius').value
         self.l = self.get_parameter('wheel_base').value
         self.dt = self.get_parameter('sampling_time').value
+        self.k_r = self.get_parameter('k_r').value
+        self.k_l = self.get_parameter('k_l').value
 
         # Estado del robot 
         self.sx = self.get_parameter('x0').value
@@ -95,13 +100,13 @@ class PuzzleBotKinematic(Node):
         pose_msg.pose.orientation.w = qw
         self.pose_pub.publish(pose_msg) 
 
-        # Publicar velocidades
+        # Publicar velocidades con ruido gaussiano: ω = ω + N(0, k·|ω|)
         wr_msg = Float32()
         wl_msg = Float32()
-        wr_msg.data = wr
-        wl_msg.data = wl
+        wr_msg.data = wr + np.random.normal(0, self.k_r * abs(wr))
+        wl_msg.data = wl + np.random.normal(0, self.k_l * abs(wl))
         self.wr_pub.publish(wr_msg)
-        self.wl_pub.publish(wl_msg) 
+        self.wl_pub.publish(wl_msg)
 
         # Log
         #self.get_logger().info(f'Pose: ({self.sx:.2f}, {self.sy:.2f}, {self.stheta:.2f}) | V={self.v:.2f} m/s | W={self.w:.2f} rad/s')        

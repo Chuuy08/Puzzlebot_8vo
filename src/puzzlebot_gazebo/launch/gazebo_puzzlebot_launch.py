@@ -174,12 +174,13 @@ def generate_launch_description():
 
     # Final launch description list of all declared arguments and nodes
     l_d = [
-        declare_robot_name_arg, declare_robot_arg, declare_x_arg, declare_y_arg, declare_th_arg, declare_sim_time_arg, declare_prefix_arg,
+        declare_robot_name_arg, declare_robot_arg, declare_x_arg, declare_y_arg, declare_th_arg,
+        declare_sim_time_arg, declare_prefix_arg,
+        declare_camera_frame_arg, declare_tof_frame_arg, declare_lidar_frame_arg,
         robot_state_publisher_node, spawn_robot,
         start_gazebo_ros_bridge_hacker_ed, start_gazebo_ros_bridge_jetson_lidar_ed, start_gazebo_ros_bridge_jetson_ed,
         start_gazebo_ros_image_bridge_cmd,
         joint_vel_bridge_node,
-        declare_camera_frame_arg, declare_tof_frame_arg, declare_lidar_frame_arg
     ]
 
     return LaunchDescription(l_d)

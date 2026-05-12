@@ -62,7 +62,10 @@ def generate_launch_description():
         name='puzzlebot_kinematic',
         namespace='robot1',
         output='screen',
-        parameters=[robot_params]
+        parameters=[robot_params],
+        remappings=[
+            ('cmd_vel', '/cmd_vel'),  # lee el mismo cmd_vel global que recibe la Jetson
+        ]
     )
 
     r1_localisation = Node(
@@ -100,7 +103,11 @@ def generate_launch_description():
             'sampling_time': 0.05,
             'v_max': 0.2,
             'w_max': 1.0,
-        }]
+        }],
+        remappings=[
+            ('cmd_vel', '/cmd_vel'),  # publica al topic global → llega a Jetson Y al kinematic
+            ('odom', '/robot1/odom'), # lee la odometria del robot simulado
+        ]
     )
 
     r1_setpoint = Node(
@@ -112,7 +119,9 @@ def generate_launch_description():
         parameters=[{'trajectory': 'square', 'side_length': 1.0, 'loop': False}]
     )
 
-    # Robot 2
+    # Robot 2 — Robot REAL
+    # No corre kinematic simulado: los encoders vienen del hardware (Jetson)
+    # El remap conecta los topics globales del robot real al namespace robot2
     r2_robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -126,22 +135,17 @@ def generate_launch_description():
         }]
     )
 
-    r2_kinematic = Node(
-        package='puzzlebot_challenge',
-        executable='puzzlebot_kinematic',
-        name='puzzlebot_kinematic',
-        namespace='robot2',
-        output='screen',
-        parameters=[{**robot_params, 'x0': 0.0, 'y0': 1.5}]
-    )
-
     r2_localisation = Node(
         package='puzzlebot_localisation',
         executable='localisation',
         name='localisation',
         namespace='robot2',
         output='screen',
-        parameters=[{**robot_params, 'odom_frame': 'odom'}]
+        parameters=[{**robot_params, 'odom_frame': 'odom'}],
+        remappings=[
+            ('wr', '/VelocityEncR'),
+            ('wl', '/VelocityEncL'),
+        ]
     )
 
     r2_joint_state = Node(
@@ -151,35 +155,6 @@ def generate_launch_description():
         namespace='robot2',
         output='screen',
         parameters=[{'sampling_time': robot_params['sampling_time']}]
-    )
-
-    r2_control = Node(
-        package='puzzlebot_control',
-        executable='control',
-        name='control',
-        namespace='robot2',
-        output='screen',
-        parameters=[{
-            'Kp_d': 0.25,
-            'Ki_d': 0.0,
-            'Kd_d': 0.0,
-            'Kp_theta': 1.8,
-            'Ki_theta': 0.0,
-            'Kd_theta': 0.0,
-            'threshold': 0.1,
-            'sampling_time': 0.05,
-            'v_max': 0.2,
-            'w_max': 1.0,
-        }]
-    )
-
-    r2_setpoint = Node(
-        package='puzzlebot_control',
-        executable='set_poin_generator',
-        name='set_poin_generator',
-        namespace='robot2',
-        output='screen',
-        parameters=[{'trajectory': 'pentagon', 'side_length': 1.0, 'loop': False}]
     )
 
     rviz_config = os.path.join(
@@ -219,11 +194,8 @@ def generate_launch_description():
         r1_setpoint,
 
         r2_robot_state_pub,
-        r2_kinematic,
         r2_localisation,
         r2_joint_state,
-        r2_control,
-        r2_setpoint,
 
         rqt_tf_tree_node,
         rviz_node,
