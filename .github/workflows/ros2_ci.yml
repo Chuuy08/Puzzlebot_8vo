@@ -1,0 +1,104 @@
+name: ROS 2 CI
+
+# Cuándo se activa este workflow
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-22.04  # ROS 2 Humble requiere Ubuntu 22.04
+
+    steps:
+
+      # 1. Clona el repositorio en el runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Instala ROS 2 Humble usando una action oficial de la comunidad ROS
+      - name: Setup ROS 2 Humble
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      # 3. Instala dependencias de los packages (rosdep resuelve package.xml)
+      - name: Install dependencies with rosdep
+        run: |
+          source /opt/ros/humble/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+        shell: bash
+
+      # 4. Verifica sintaxis de todos los .py (excluye Acts_extras)
+      - name: Python syntax check
+        run: |
+          echo "--- Verificando sintaxis Python ---"
+          ERRORS=0
+          while IFS= read -r -d '' f; do
+            if python3 -m py_compile "$f" 2>&1; then
+              echo "  OK  $f"
+            else
+              echo "  FAIL $f"
+              ERRORS=$((ERRORS+1))
+            fi
+          done < <(find src -name "*.py" ! -path "*/Acts_extras/*" -print0)
+          echo ""
+          if [ $ERRORS -gt 0 ]; then
+            echo "ERROR: $ERRORS archivo(s) con problemas de sintaxis"
+            exit 1
+          fi
+          echo "Sintaxis OK en todos los archivos"
+
+      # 5. Compila los packages del workspace (excluye Acts_extras que no es package ROS)
+      - name: Build workspace
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build \
+            --packages-select \
+              puzzlebot_challenge \
+              puzzlebot_control \
+              puzzlebot_description \
+              puzzlebot_gazebo \
+              puzzlebot_localisation \
+            --event-handlers console_direct+
+        shell: bash
+
+      # 6. Verifica que los launch files son Python válido e importan sin errores
+      - name: Validate launch files
+        run: |
+          source /opt/ros/humble/setup.bash
+          source install/setup.bash
+          echo "--- Validando launch files ---"
+          ERRORS=0
+          while IFS= read -r -d '' f; do
+            if python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('launch_module', '$f')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+" 2>&1; then
+              echo "  OK  $f"
+            else
+              echo "  FAIL $f"
+              ERRORS=$((ERRORS+1))
+            fi
+          done < <(find src -name "*launch*.py" ! -path "*/Acts_extras/*" -print0)
+          if [ $ERRORS -gt 0 ]; then
+            echo "ERROR: $ERRORS launch file(s) con problemas"
+            exit 1
+          fi
+          echo "Launch files OK"
+        shell: bash
+
+      # 7. Lista los executables disponibles tras el build (útil para debug)
+      - name: List available executables
+        run: |
+          source /opt/ros/humble/setup.bash
+          source install/setup.bash
+          echo "--- Executables registrados ---"
+          ros2 pkg executables puzzlebot_challenge || true
+          ros2 pkg executables puzzlebot_control   || true
+          ros2 pkg executables puzzlebot_localisation || true
+        shell: bash
