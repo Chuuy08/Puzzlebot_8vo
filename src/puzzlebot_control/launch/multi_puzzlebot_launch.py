@@ -2,6 +2,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -13,9 +14,12 @@ def generate_launch_description():
         'wheel_radius':  0.05,
         'wheel_base':    0.19,
         'sampling_time': 0.05,
+        'k_r': 0.1592,
+        'k_l': 0.2128,
     }
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
+    gui = LaunchConfiguration('gui', default='true')
 
     urdf_path = os.path.join(
         get_package_share_directory('puzzlebot_description'),
@@ -93,16 +97,16 @@ def generate_launch_description():
         namespace='robot1',
         output='screen',
         parameters=[{
-            'Kp_d': 0.25,
-            'Ki_d': 0.0,
-            'Kd_d': 0.0,
-            'Kp_theta': 1.8,
-            'Ki_theta': 0.0,
-            'Kd_theta': 0.0,
-            'threshold': 0.1,
+            'Kp_d': 0.2, # 0.2
+            'Ki_d': 0.01, # 0.00
+            'Kd_d': 0.000, # 0.010
+            'Kp_theta': 1.4, # 1.1
+            'Ki_theta': 0.15, #0.10
+            'Kd_theta': 0.001, #0.001
+            'threshold': 0.04, #0.03
             'sampling_time': 0.05,
-            'v_max': 0.2,
-            'w_max': 1.0,
+            'v_max': 0.20,
+            'w_max': 0.5,
         }],
         remappings=[
             ('cmd_vel', '/cmd_vel'),  # publica al topic global → llega a Jetson Y al kinematic
@@ -169,12 +173,14 @@ def generate_launch_description():
         name='rviz2',
         output='screen',
         arguments=['-d', rviz_config],
+        condition=IfCondition(gui),
     )
 
     rqt_tf_tree_node = Node(
         name='rqt_tf_tree',
         package='rqt_tf_tree',
-        executable='rqt_tf_tree'
+        executable='rqt_tf_tree',
+        condition=IfCondition(gui),
     )
 
     return LaunchDescription([
@@ -182,6 +188,10 @@ def generate_launch_description():
             'use_sim_time',
             default_value='false',
             description='Use simulation clock if true'),
+        DeclareLaunchArgument(
+            'gui',
+            default_value='true',
+            description='Launch RViz and rqt_tf_tree'),
 
         static_tf_world_map,
         static_tf_map_odom,

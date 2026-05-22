@@ -16,6 +16,10 @@ def generate_square(side):
     ]
 
 
+def generate_line(length):
+    return [(length, 0.0)]
+
+
 def generate_pentagon(side):
     n = 5
     # Radio del círculo que contiene el pentágono
@@ -51,6 +55,8 @@ class SetpointGenerator(Node):
             self.waypoints = generate_square(side_length)
         elif trajectory == 'pentagon':
             self.waypoints = generate_pentagon(side_length)
+        elif trajectory == 'line':
+            self.waypoints = generate_line(side_length)
         else:
             self.get_logger().warn(
                 f'Trayectoria "{trajectory}" no reconocida. Usando cuadrado.'

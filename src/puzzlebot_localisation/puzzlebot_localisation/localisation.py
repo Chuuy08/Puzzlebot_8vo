@@ -21,8 +21,13 @@ class Localisation(Node):
         self.declare_parameter('wheel_base',    0.19)
         self.declare_parameter('sampling_time', 0.05)
         self.declare_parameter('odom_frame', 'odom')
+        self.declare_parameter('k_r', 0.1592)
+        self.declare_parameter('k_l', 0.2128)
 
         self.odom_frame = self.get_parameter('odom_frame').get_parameter_value().string_value.strip('/')
+        # child_frame_id without leading slash — required by tf2/Cartographer
+        ns = self.namespace
+        self.base_frame_id = f'{ns}/base_footprint' if ns else 'base_footprint'
 
 
         self.r  = self.get_parameter('wheel_radius').value
@@ -55,13 +60,10 @@ class Localisation(Node):
 
 
 
-        # Variable covarianza
-        self.Sigma = np.zeros((3,3))
+        self.k_r = self.get_parameter('k_r').value
+        self.k_l = self.get_parameter('k_l').value
 
-        # --- PROBABILISTIC LOCALISATION ADDITION: Noise coefficients ---
-        # Encoder noise proportionality constants — tune these to match real hardware
-        self.k_r = 0.05  # right wheel noise coefficient
-        self.k_l = 0.05  # left wheel noise coefficient
+        self.Sigma = np.zeros((3, 3))
 
         # Timer 
         self.timer = self.create_timer(self.dt, self.timer_callback)
@@ -70,12 +72,10 @@ class Localisation(Node):
 
     # Callbacks de /wr y /wl
     def wr_callback(self, msg: Float32):
-        self.get_logger().info(f"{msg.data}")
         self.wr = msg.data
 
     def wl_callback(self, msg: Float32):
-        self.get_logger().info(f"{msg.data}")
-        self.wl = msg.data 
+        self.wl = msg.data
 
     # Dead reckoning
     def timer_callback(self):
@@ -131,16 +131,13 @@ class Localisation(Node):
         # Sigma grows each step: Ak spreads existing uncertainty, Qk adds new motion noise
         self.Sigma = Ak @ self.Sigma @ Ak.T + Qk
 
-        # --- PROBABILISTIC LOCALISATION ADDITION: Debug print ---
-        print(self.Sigma)
-
         current_time = self.get_clock().now().to_msg()
 
         # Publicar odometry
         odom_msg = Odometry()
         odom_msg.header.stamp = current_time
         odom_msg.header.frame_id = self.odom_frame
-        odom_msg.child_frame_id = f'{self.namespace}/base_footprint'
+        odom_msg.child_frame_id = self.base_frame_id
 
         # --- PROBABILISTIC LOCALISATION ADDITION: Map 3x3 Sigma into 6x6 ROS covariance ---
         # 6x6 row-major for [x, y, z, roll, pitch, yaw]
@@ -177,7 +174,7 @@ class Localisation(Node):
         tf_msg = TransformStamped()
         tf_msg.header.stamp = current_time
         tf_msg.header.frame_id = self.odom_frame
-        tf_msg.child_frame_id = f'{self.namespace}/base_footprint'
+        tf_msg.child_frame_id = self.base_frame_id
 
 
         tf_msg.transform.translation.x = self.sx

@@ -1,0 +1,79 @@
+slam_toolbox:
+  ros__parameters:
+
+    # ── Solver ────────────────────────────────────────────────────────
+    solver_plugin:          solver_plugins::CeresSolver
+    ceres_linear_solver:    SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner:   SCHUR_JACOBI
+    ceres_trust_strategy:   LEVENBERG_MARQUARDT
+    ceres_dogleg_type:      TRADITIONAL_DOGLEG
+    ceres_loss_function:    None
+
+    # ── Frames ────────────────────────────────────────────────────────
+    # Must match the TF tree from localisation.py and robot_state_publisher
+    odom_frame:  odom
+    map_frame:   map
+    base_frame:  base_footprint   # localisation.py broadcasts odom→base_footprint
+    scan_topic:  /scan
+
+    mode: mapping
+
+    # ── Timing ────────────────────────────────────────────────────────
+    # use_sim_time is overridden at launch time via Node(parameters=[...])
+    use_map_saver:           true
+    throttle_scans:          1
+    # CRITICAL: if 0, map→odom TF is never published and /map never appears
+    transform_publish_period: 0.02
+    map_update_interval:     3.0   # seconds between /map publishes (lower = more responsive)
+    minimum_time_interval:   0.5
+    transform_timeout:       0.5   # increased from 0.2 — gives more time for TF lookup
+    tf_buffer_duration:      30.0
+    stack_size_to_use:       40000000
+
+    # ── Map ───────────────────────────────────────────────────────────
+    resolution:       0.05
+    min_laser_range:  0.0
+    max_laser_range:  3.5    # RPLidar range, clipped for 3x3m room
+
+    # ── Scan matching ─────────────────────────────────────────────────
+    use_scan_matching:    true
+    use_scan_barycenter:  true
+    enable_interactive_mode: true
+
+    minimum_travel_distance: 0.3  # metres before new keyframe
+    minimum_travel_heading:  0.3  # radians before new keyframe
+
+    scan_buffer_size:                   10
+    scan_buffer_maximum_scan_distance:  10.0
+    link_match_minimum_response_fine:   0.1
+    link_scan_maximum_distance:         1.5
+    loop_search_maximum_distance:       3.0
+
+    # ── Loop closure ──────────────────────────────────────────────────
+    do_loop_closing:                  true
+    loop_match_minimum_chain_size:    10
+    loop_match_maximum_variance_coarse:  3.0
+    loop_match_minimum_response_coarse:  0.35
+    loop_match_minimum_response_fine:    0.45
+
+    # ── Correlation ───────────────────────────────────────────────────
+    correlation_search_space_dimension:    0.5
+    correlation_search_space_resolution:   0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    loop_search_space_dimension:       8.0
+    loop_search_space_resolution:      0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ── Scan matcher penalties ────────────────────────────────────────
+    distance_variance_penalty: 0.5
+    angle_variance_penalty:    1.0
+    fine_search_angle_offset:  0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution:   0.0349
+    minimum_angle_penalty:     0.9
+    minimum_distance_penalty:  0.5
+    use_response_expansion:    true
+
+    min_pass_through:     2
+    occupancy_threshold:  0.1
