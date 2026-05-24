@@ -141,8 +141,8 @@ def generate_launch_description():
         DeclareLaunchArgument('world', default_value='obstacle_avoidance_4.world',
                               description='Gazebo world file name'),
 
-        gazebo_world,
-        spawn_robot,
+        #gazebo_world,
+        #spawn_robot,
         localisation_node,
         cartographer_node,
         cartographer_grid_node,

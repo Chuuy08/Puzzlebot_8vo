@@ -60,8 +60,9 @@ class ICPNode(Node):
         self.loop_closed              = False
 
         _I3 = np.eye(3, dtype=np.float64)
-        self.odom_cov: np.ndarray = _I3 * 1e-4
-        self.ref_cov:  np.ndarray = _I3 * 1e-4
+        self.odom_cov: np.ndarray    = _I3 * 1e-4
+        self.ref_cov:  np.ndarray    = _I3 * 1e-4
+        self.ekf_cov_2d: np.ndarray  = np.eye(2) * 1e-4  # EKF-corrected x,y covariance
 
         self.scan_sub = self.create_subscription(LaserScan, 'scan',  self._scan_cb, 10)
         self.odom_sub = self.create_subscription(Odometry,  '/odom', self._odom_cb, 10)
@@ -185,33 +186,47 @@ class ICPNode(Node):
         result = self._icp(pts_map, self.ref_scan)
 
         if result is not None:
-            dx, dy, _, score = result
+            dx, dy, dtheta, score = result
+            s = max(score, 0.02)
 
-            # EKF: x,y only — θ always from odom (encoders are more reliable for heading)
+            # ── x,y EKF ──────────────────────────────────────────────
             P2 = (self.odom_cov - self.ref_cov)[:2, :2]
             P2 = (P2 + P2.T) / 2.0
             P2 = P2 - min(np.linalg.eigvalsh(P2).min(), 0) * np.eye(2)
             P2 += np.eye(2) * 1e-6
-
-            s  = max(score, 0.02)
             R2 = np.eye(2) * (s ** 2)
             K2 = P2 @ np.linalg.inv(P2 + R2)
-
             corr_xy = K2 @ np.array([dx, dy])
+            self.ekf_cov_2d = (np.eye(2) - K2) @ P2
+
+            # ── θ EKF — small gain to slowly correct heading drift ───
+            # R_theta is 25× larger than R_xy so the gain is much smaller.
+            # This prevents sudden map rotations while still correcting
+            # accumulated heading error over many scans.
+            p_th = max(self.odom_cov[2, 2] - self.ref_cov[2, 2], 1e-6)
+            r_th = (s * 5.0) ** 2
+            k_th = p_th / (p_th + r_th)
+            corr_th = k_th * dtheta
+            if abs(corr_th) > self.max_rot_correction:
+                corr_th = 0.0
+
             self.pose    = init_pose.copy()
             self.pose[0] += corr_xy[0]
             self.pose[1] += corr_xy[1]
+            self.pose[2]  = self._wrap(self.pose[2] + corr_th)
 
             pts_map = self._rigid2d(pts_robot, *self.pose)
         else:
             self.pose = init_pose.copy()
+            self.ekf_cov_2d = self.odom_cov[:2, :2].copy()
 
         dist_from_kf  = np.linalg.norm(self.pose[:2] - self.ref_pose[:2])
         angle_from_kf = abs(self._wrap(self.pose[2] - self.ref_pose[2]))
         if dist_from_kf >= self.kf_dist or angle_from_kf >= self.kf_angle:
-            self.ref_scan = pts_map
-            self.ref_pose = self.pose.copy()
-            self.ref_cov  = self.odom_cov.copy()
+            self.ref_scan   = pts_map
+            self.ref_pose   = self.pose.copy()
+            self.ref_cov    = self.odom_cov.copy()
+            self.ekf_cov_2d = np.eye(2) * 1e-4  # position confirmed — reset to small
 
         self.scan_count += 1
         if (not self.loop_closed
@@ -268,6 +283,14 @@ class ICPNode(Node):
         od.header         = ps.header
         od.child_frame_id = self.base_frame
         od.pose.pose      = ps.pose
+        # EKF-corrected covariance: shrinks after a good ICP match, grows while drifting
+        cov = [0.0] * 36
+        cov[0]  = self.ekf_cov_2d[0, 0]   # x-x
+        cov[1]  = self.ekf_cov_2d[0, 1]   # x-y
+        cov[6]  = self.ekf_cov_2d[1, 0]   # y-x
+        cov[7]  = self.ekf_cov_2d[1, 1]   # y-y
+        cov[35] = self.odom_cov[2, 2]      # θ-θ from odom (not corrected by ICP)
+        od.pose.covariance = cov
         self.odom_pub.publish(od)
 
         tf = TransformStamped()
