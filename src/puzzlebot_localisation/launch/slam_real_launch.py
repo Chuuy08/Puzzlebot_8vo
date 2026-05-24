@@ -14,7 +14,7 @@ def generate_launch_description():
     desc_pkg = get_package_share_directory('puzzlebot_description')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
-    use_slam_tb  = LaunchConfiguration('slam_toolbox', default='true')
+    use_slam_tb  = LaunchConfiguration('slam_toolbox', default='false')
 
     urdf_path  = os.path.join(desc_pkg, 'urdf', 'mcr2_robots', 'puzzlebot_jetson_lidar_ed.xacro')
     robot_desc = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
@@ -77,6 +77,7 @@ def generate_launch_description():
             'downsample_step':         3,
             'min_points':              20,
             'map_frame':               'map',
+            'odom_frame':              'odom',
             'base_frame':              'base_footprint',
             'laser_x_offset':          0.0,
             'laser_y_offset':          0.0,
@@ -129,7 +130,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('slam_toolbox', default_value='true',
+        DeclareLaunchArgument('slam_toolbox', default_value='false',
                               description='Launch slam_toolbox alongside ICP'),
 
         robot_state_pub,

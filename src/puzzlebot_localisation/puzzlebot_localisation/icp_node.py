@@ -20,6 +20,7 @@ class ICPNode(Node):
         self.declare_parameter('downsample_step',             3)
         self.declare_parameter('min_points',                  20)
         self.declare_parameter('map_frame',                   'map')
+        self.declare_parameter('odom_frame',                  'odom')
         self.declare_parameter('base_frame',                  'base_footprint')
         self.declare_parameter('laser_x_offset',              0.0)
         self.declare_parameter('laser_y_offset',              0.0)
@@ -38,6 +39,7 @@ class ICPNode(Node):
         self.step              = self.get_parameter('downsample_step').value
         self.min_pts           = self.get_parameter('min_points').value
         self.map_frame         = self.get_parameter('map_frame').value
+        self.odom_frame        = self.get_parameter('odom_frame').value
         self.base_frame        = self.get_parameter('base_frame').value
         self.lx                = self.get_parameter('laser_x_offset').value
         self.ly                = self.get_parameter('laser_y_offset').value
@@ -293,14 +295,32 @@ class ICPNode(Node):
         od.pose.covariance = cov
         self.odom_pub.publish(od)
 
-        tf = TransformStamped()
-        tf.header              = ps.header
-        tf.child_frame_id      = self.base_frame + '_icp'
-        tf.transform.translation.x = x
-        tf.transform.translation.y = y
-        tf.transform.rotation.z    = qz
-        tf.transform.rotation.w    = qw
-        self.tf_br.sendTransform(tf)
+        # map → base_footprint_icp  (visualization only)
+        tf_vis = TransformStamped()
+        tf_vis.header           = ps.header
+        tf_vis.child_frame_id   = self.base_frame + '_icp'
+        tf_vis.transform.translation.x = x
+        tf_vis.transform.translation.y = y
+        tf_vis.transform.rotation.z    = qz
+        tf_vis.transform.rotation.w    = qw
+        self.tf_br.sendTransform(tf_vis)
+
+        # map → odom  (main TF chain — needed for fixed frame 'map' in RViz)
+        # T_map_odom = T_map_basefoot * inv(T_odom_basefoot)
+        if self.odom_pose is not None:
+            dth = self._wrap(th - self.odom_pose[2])
+            c_d, s_d = math.cos(dth), math.sin(dth)
+            tx = x - (c_d * self.odom_pose[0] - s_d * self.odom_pose[1])
+            ty = y - (s_d * self.odom_pose[0] + c_d * self.odom_pose[1])
+            tf_mo = TransformStamped()
+            tf_mo.header.stamp    = stamp
+            tf_mo.header.frame_id = self.map_frame
+            tf_mo.child_frame_id  = self.odom_frame
+            tf_mo.transform.translation.x = tx
+            tf_mo.transform.translation.y = ty
+            tf_mo.transform.rotation.z    = math.sin(dth / 2.0)
+            tf_mo.transform.rotation.w    = math.cos(dth / 2.0)
+            self.tf_br.sendTransform(tf_mo)
 
 
 def main(args=None):
