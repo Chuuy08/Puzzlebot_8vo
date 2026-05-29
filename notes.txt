@@ -1,0 +1,30 @@
+Conectar a puzzlebot
+ssh puzzlebot@10.42.0.48
+Puzzlebot72
+
+Lanzar micro_ros_agent
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0
+
+
+
+1. Visualizar en rviz 
+ros2 launch puzzlebot_description robot_state_publisher_launch.py
+
+2. Simulacion gazebo - 1 carro
+ros2 launch puzzlebot_gazebo bringup_simulation_simple_launch.py
+
+3. Simulacion gazebo - 2 carros
+ros2 launch puzzlebot_gazebo bringup_simulation_multi_launch.py
+
+4. Simulacion gazebo con todos los parametros explicitos
+ros2 launch puzzlebot_gazebo gazebo_example_launch.py
+
+5. Control real del puzzlebot_description
+ros2 launch puzzlebot_control puzzlebot_launch.py
+
+6. Control de dos robots reales simultáneos:
+ros2 launch puzzlebot_control multi_puzzlebot_launch.py
+
+
+
+Si en algun momento desea conectar mis nodos de control y localización a Gazebo en lugar del robot real

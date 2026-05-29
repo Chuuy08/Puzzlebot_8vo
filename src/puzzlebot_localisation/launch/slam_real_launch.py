@@ -63,6 +63,19 @@ def generate_launch_description():
         ]
     )
 
+    # RPLidar publishes with its hardware clock (drifts from system time).
+    # This relay overwrites the stamp so TF lookups work in RViz.
+    scan_relay = Node(
+        package='puzzlebot_localisation',
+        executable='scan_relay',
+        name='scan_relay',
+        output='screen',
+        remappings=[
+            ('scan_raw', '/scan'),        # subscribe from RPLidar
+            ('scan',     '/scan_fixed'),  # publish restamped
+        ],
+    )
+
     icp_node = Node(
         package='puzzlebot_localisation',
         executable='icp_node',
@@ -87,7 +100,7 @@ def generate_launch_description():
             'keyframe_angle_deg':      10.0,
             'skip_icp_ang_vel_thresh': 0.15,
         }],
-        remappings=[('scan', '/scan')]
+        remappings=[('scan', '/scan_fixed')]
     )
 
     icp_map_node = Node(
@@ -103,7 +116,7 @@ def generate_launch_description():
             'map_frame':    'map',
             'publish_rate': 2.0,
         }],
-        remappings=[('scan', '/scan')]
+        remappings=[('scan', '/scan_fixed')]
     )
 
     slam_toolbox_node = TimerAction(
@@ -137,6 +150,7 @@ def generate_launch_description():
         joint_state_pub,
         laser_frame_bridge,
         localisation_node,
+        scan_relay,
         icp_node,
         icp_map_node,
         slam_toolbox_node,

@@ -38,6 +38,7 @@ setup(
             'mcl_node = puzzlebot_localisation.mcl_node:main',
             'icp_node = puzzlebot_localisation.icp_node:main',
             'icp_map_node = puzzlebot_localisation.occupancy_grid_node:main',
+            'scan_relay = puzzlebot_localisation.scan_relay:main',
         ],
     },
 )

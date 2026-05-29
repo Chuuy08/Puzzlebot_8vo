@@ -8,7 +8,7 @@ from nav_msgs.msg import Odometry, OccupancyGrid
 from geometry_msgs.msg import (Pose, PoseArray,
                                 PoseWithCovarianceStamped, TransformStamped)
 from tf2_ros import TransformBroadcaster
-from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 from scipy.ndimage import distance_transform_edt
 
 
@@ -103,8 +103,14 @@ class MCLNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.map_sub  = self.create_subscription(OccupancyGrid, '/map', self._map_cb, map_qos)
-        self.odom_sub = self.create_subscription(Odometry,                  '/odom',        self._odom_cb,      10)
-        self.scan_sub = self.create_subscription(LaserScan,                 '/scan',        self._scan_cb,      10)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
+        self.odom_sub = self.create_subscription(Odometry,  '/odom', self._odom_cb, sensor_qos)
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self._scan_cb, sensor_qos)
         self.init_sub = self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self._init_pose_cb, 10)
 
         self.pose_pub  = self.create_publisher(PoseWithCovarianceStamped, 'mcl_pose',       10)
@@ -500,3 +506,7 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
+
+
+    

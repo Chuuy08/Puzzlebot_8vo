@@ -1,0 +1,72 @@
+services:
+
+  # ─────────────────────────────────────────────
+  # Corre TODOS los checks en secuencia
+  # Uso: docker compose run --rm ci
+  # ─────────────────────────────────────────────
+  ci:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: bash /docker/ci.sh
+
+  # ─────────────────────────────────────────────
+  # Solo verifica sintaxis Python (rápido, sin build)
+  # Uso: docker compose run --rm syntax
+  # ─────────────────────────────────────────────
+  syntax:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >-
+      bash -c "
+      ERRORS=0 &&
+      while IFS= read -r -d '' f; do
+        if python3 -m py_compile \"$$f\"; then echo \"  OK   $$f\";
+        else echo \"  FAIL $$f\"; ERRORS=$$((ERRORS+1)); fi;
+      done < <(find src -name '*.py' ! -path '*/Acts_extras/*' -print0) &&
+      if [ $$ERRORS -gt 0 ]; then exit 1; fi &&
+      echo 'Sintaxis OK'
+      "
+
+  # ─────────────────────────────────────────────
+  # Solo compila el workspace
+  # Uso: docker compose run --rm build
+  # ─────────────────────────────────────────────
+  build:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >-
+      colcon build
+      --packages-select
+      puzzlebot_challenge
+      puzzlebot_control
+      puzzlebot_description
+      puzzlebot_gazebo
+      puzzlebot_localisation
+      --event-handlers console_direct+
+
+  # ─────────────────────────────────────────────
+  # Shell interactivo dentro del contenedor con ROS cargado
+  # Uso: docker compose run --rm shell
+  # ─────────────────────────────────────────────
+  shell:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: bash
+    stdin_open: true
+    tty: true
+
+  # ─────────────────────────────────────────────
+  # Demo: build + launch multi_puzzlebot (sin GUI)
+  # En otra terminal: ros2 topic echo /robot1/pose
+  # Uso: docker compose run --rm demo
+  # ─────────────────────────────────────────────
+  demo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    network_mode: host
+    command: bash /docker/demo.sh

@@ -3,6 +3,7 @@ import math
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -66,8 +67,14 @@ class ICPNode(Node):
         self.ref_cov:  np.ndarray    = _I3 * 1e-4
         self.ekf_cov_2d: np.ndarray  = np.eye(2) * 1e-4  # EKF-corrected x,y covariance
 
-        self.scan_sub = self.create_subscription(LaserScan, 'scan',  self._scan_cb, 10)
-        self.odom_sub = self.create_subscription(Odometry,  '/odom', self._odom_cb, 10)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
+        self.scan_sub = self.create_subscription(LaserScan, 'scan',  self._scan_cb, sensor_qos)
+        self.odom_sub = self.create_subscription(Odometry,  '/odom', self._odom_cb, sensor_qos)
         self.pose_pub = self.create_publisher(PoseStamped, 'icp_pose', 10)
         self.odom_pub = self.create_publisher(Odometry,    'icp_odom', 10)
         self.tf_br    = TransformBroadcaster(self)
@@ -176,13 +183,13 @@ class ICPNode(Node):
             self.initial_scan = pts_map.copy()
             self.pose         = init_pose.copy()
             self.get_logger().info('ICP: reference scan initialised — tracking started')
-            self._publish(msg.header.stamp)
+            self._publish(self.get_clock().now().to_msg())
             return
 
         if self.odom_ang_vel > self.skip_icp_thresh:
             self.pose = init_pose.copy()
             self.scan_count += 1
-            self._publish(msg.header.stamp)
+            self._publish(self.get_clock().now().to_msg())
             return
 
         result = self._icp(pts_map, self.ref_scan)
@@ -236,7 +243,7 @@ class ICPNode(Node):
                 and self.scan_count % self.loop_check_period == 0):
             self._check_loop_closure(pts_robot)
 
-        self._publish(msg.header.stamp)
+        self._publish(self.get_clock().now().to_msg())
 
     def _check_loop_closure(self, pts_robot: np.ndarray):
         if self.initial_scan is None:
@@ -307,20 +314,21 @@ class ICPNode(Node):
 
         # map → odom  (main TF chain — needed for fixed frame 'map' in RViz)
         # T_map_odom = T_map_basefoot * inv(T_odom_basefoot)
-        if self.odom_pose is not None:
-            dth = self._wrap(th - self.odom_pose[2])
-            c_d, s_d = math.cos(dth), math.sin(dth)
-            tx = x - (c_d * self.odom_pose[0] - s_d * self.odom_pose[1])
-            ty = y - (s_d * self.odom_pose[0] + c_d * self.odom_pose[1])
-            tf_mo = TransformStamped()
-            tf_mo.header.stamp    = stamp
-            tf_mo.header.frame_id = self.map_frame
-            tf_mo.child_frame_id  = self.odom_frame
-            tf_mo.transform.translation.x = tx
-            tf_mo.transform.translation.y = ty
-            tf_mo.transform.rotation.z    = math.sin(dth / 2.0)
-            tf_mo.transform.rotation.w    = math.cos(dth / 2.0)
-            self.tf_br.sendTransform(tf_mo)
+        # Published always (identity until odom arrives) so 'map' appears in RViz immediately.
+        op = self.odom_pose if self.odom_pose is not None else np.zeros(3)
+        dth = self._wrap(th - op[2])
+        c_d, s_d = math.cos(dth), math.sin(dth)
+        tx = x - (c_d * op[0] - s_d * op[1])
+        ty = y - (s_d * op[0] + c_d * op[1])
+        tf_mo = TransformStamped()
+        tf_mo.header.stamp    = stamp
+        tf_mo.header.frame_id = self.map_frame
+        tf_mo.child_frame_id  = self.odom_frame
+        tf_mo.transform.translation.x = tx
+        tf_mo.transform.translation.y = ty
+        tf_mo.transform.rotation.z    = math.sin(dth / 2.0)
+        tf_mo.transform.rotation.w    = math.cos(dth / 2.0)
+        self.tf_br.sendTransform(tf_mo)
 
 
 def main(args=None):

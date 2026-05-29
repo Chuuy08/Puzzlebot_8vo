@@ -66,6 +66,20 @@ def generate_launch_description():
         ]
     )
 
+    # sllidar hardware clock drifts from the ROS system clock. Overwrite the stamp
+    # so Cartographer's TF lookups succeed. Also bridges the driver's BEST_EFFORT
+    # QoS to the relayed /scan_fixed topic.
+    scan_relay = Node(
+        package='puzzlebot_localisation',
+        executable='scan_relay',
+        name='scan_relay',
+        output='screen',
+        remappings=[
+            ('scan_raw', '/scan'),       # read from sllidar driver
+            ('scan',     '/scan_fixed'), # publish with current ROS timestamp
+        ],
+    )
+
     # Cartographer: scan matching + loop closure → publishes map → odom TF and /map
     cartographer_node = TimerAction(
         period=3.0,
@@ -80,7 +94,7 @@ def generate_launch_description():
                 '-configuration_basename', 'cartographer.lua',
             ],
             remappings=[
-                ('scan', '/scan'),
+                ('scan', '/scan_fixed'),  # use timestamp-corrected scan
                 ('odom', '/odom'),
             ],
         )]
@@ -116,6 +130,7 @@ def generate_launch_description():
         joint_state_pub,
         laser_frame_bridge,
         localisation_node,
+        scan_relay,
         cartographer_node,
         cartographer_grid_node,
         rviz_node,
