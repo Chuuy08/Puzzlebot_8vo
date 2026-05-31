@@ -66,7 +66,7 @@ def generate_launch_description():
         ]
     )
 
-    # ── 3. Scan relay: fix sllidar hardware timestamps + bridge BEST_EFFORT → RELIABLE ──
+    # ── 3. Scan relay: fix sllidar hardware timestamps ───────────────────────
 
     scan_relay = Node(
         package='puzzlebot_localisation',
@@ -116,12 +116,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time':        use_sim_time,
-            # Subido de 600→800: más partículas compensan el mayor ruido del HW real
             'num_particles':       2800,
-            # Bajados de 0.15→0.1 y 0.08→0.05: los valores anteriores eran
-            # excesivos y causaban dispersión durante giros. Con el LiDAR
-            # ahora correctamente orientado (laser_angle_offset=π), el sensor
-            # model puede discriminar bien y no necesita alphas inflados.
             'alpha1':              0.1,
             'alpha2':              0.1,
             'alpha3':              0.05,
@@ -168,7 +163,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map',
             default_value=os.path.join(loc_pkg, 'maps', 'map_1779562705.yaml'),
-            description='Absolute path to the map YAML file',
+            description='Absolute path to the map YAML. For the real robot pass your own map: '
+                        'map:=/path/to/your_map.yaml',
         ),
 
         robot_state_pub,
