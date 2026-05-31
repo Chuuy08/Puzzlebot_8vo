@@ -23,7 +23,9 @@ def generate_launch_description():
         launch_arguments={'world': 'track_world.sdf', 'pause': 'false'}.items()
     )
 
-    # Robot spawned at the same pose the original SDF had for the puzzlebot
+    # Spawn inside the mapped area of track_world.sdf.
+    # The map (map_1779562705) covers world x∈[-1.84,4.12] y∈[-4.12,0.31].
+    # (0,0,0) is the SLAM session's starting pose → guaranteed free space inside map.
     spawn_robot = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_pkg, 'launch', 'gazebo_puzzlebot_launch.py')),
@@ -31,7 +33,7 @@ def generate_launch_description():
             'robot':        'puzzlebot_jetson_lidar_ed',
             'robot_name':   '',
             'prefix':       '',
-            'x': '-0.60', 'y': '1.69', 'yaw': '-1.57',
+            'x': '0.0', 'y': '0.0', 'yaw': '0.0',
             'lidar_frame':  'laser_frame',
             'camera_frame': 'camera_link_optical',
             'tof_frame':    'tof_link',
@@ -105,6 +107,7 @@ def generate_launch_description():
             'beam_step':         5,
             'update_min_d':      0.05,
             'update_min_a':      0.05,
+            'laser_angle_offset': 0.0,       # Gazebo gpu_lidar: angle=0 = sensor +X = robot forward
             'resample_interval': 1,
             'set_initial_pose':  False,
             'initial_pose_x':    0.0,

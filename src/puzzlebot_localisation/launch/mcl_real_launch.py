@@ -115,25 +115,37 @@ def generate_launch_description():
         name='mcl_node',
         output='screen',
         parameters=[{
-            'use_sim_time':      use_sim_time,
-            'num_particles':     600,
-            'alpha1':            0.15,
-            'alpha2':            0.15,
-            'alpha3':            0.08,
-            'alpha4':            0.08,
-            'sigma_hit':         0.15,
-            'z_hit':             0.85,
-            'z_rand':            0.15,
-            'laser_max_range':   4.5,
-            'laser_min_range':   0.15,
-            'beam_step':         5,
-            'update_min_d':      0.05,
-            'update_min_a':      0.05,
-            'resample_interval': 1,
-            'set_initial_pose':  False,
-            'initial_pose_x':    0.0,
-            'initial_pose_y':    0.0,
-            'initial_pose_a':    0.0,
+            'use_sim_time':        use_sim_time,
+            # Subido de 600→800: más partículas compensan el mayor ruido del HW real
+            'num_particles':       2800,
+            # Bajados de 0.15→0.1 y 0.08→0.05: los valores anteriores eran
+            # excesivos y causaban dispersión durante giros. Con el LiDAR
+            # ahora correctamente orientado (laser_angle_offset=π), el sensor
+            # model puede discriminar bien y no necesita alphas inflados.
+            'alpha1':              0.1,
+            'alpha2':              0.1,
+            'alpha3':              0.05,
+            'alpha4':              0.05,
+            'sigma_hit':           0.12,   # tight — used when converged/tracking
+            'sigma_hit_global':    0.30,   # loose — used during global search
+            'z_hit':               0.85,
+            'z_rand':              0.15,
+            'laser_max_range':     4.5,
+            'laser_min_range':     0.15,
+            'beam_step':           8,      # fewer beams when tracking (fast)
+            'beam_step_global':    3,      # more beams during global search
+            'update_min_d':        0.05,
+            'update_min_a':        0.12,   # ~7° — avoids noise-triggered updates
+            'resample_interval':   1,
+            
+            'laser_angle_offset':  3.14159,  # π — RPLidar cable faces rear of robot
+
+            'set_initial_pose':    False,
+            'initial_pose_x':      0.0,
+            'initial_pose_y':      0.0,
+            'initial_pose_a':      0.0,
+            'init_pose_spread_xy': 0.40,   # ±0.4m around clicked position
+            'init_pose_spread_a':  0.30,   # ±17° around RViz arrow direction
         }],
         remappings=[('/scan', '/scan_fixed')]
     )

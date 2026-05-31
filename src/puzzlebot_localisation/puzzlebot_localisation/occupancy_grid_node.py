@@ -19,6 +19,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry, OccupancyGrid
+from .utils import quat_to_yaw
 
 
 class OccupancyGridNode(Node):
@@ -80,10 +81,7 @@ class OccupancyGridNode(Node):
         self.rx = msg.pose.pose.position.x
         self.ry = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
-        # Convert quaternion to yaw
-        self.rth = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.rth = quat_to_yaw(q)
 
     def _scan_cb(self, msg: LaserScan):
         """Update occupancy grid with one laser scan."""

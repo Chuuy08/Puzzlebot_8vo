@@ -8,6 +8,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
+from .utils import quat_to_yaw, wrap_angle
 
 
 class ICPNode(Node):
@@ -152,8 +153,7 @@ class ICPNode(Node):
         x  = msg.pose.pose.position.x
         y  = msg.pose.pose.position.y
         q  = msg.pose.pose.orientation
-        th = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                        1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        th = quat_to_yaw(q)
         self.odom_pose    = np.array([x, y, th])
         self.odom_ang_vel = abs(msg.twist.twist.angular.z)
 
@@ -222,7 +222,7 @@ class ICPNode(Node):
             self.pose    = init_pose.copy()
             self.pose[0] += corr_xy[0]
             self.pose[1] += corr_xy[1]
-            self.pose[2]  = self._wrap(self.pose[2] + corr_th)
+            self.pose[2]  = wrap_angle(self.pose[2] + corr_th)
 
             pts_map = self._rigid2d(pts_robot, *self.pose)
         else:
@@ -230,7 +230,7 @@ class ICPNode(Node):
             self.ekf_cov_2d = self.odom_cov[:2, :2].copy()
 
         dist_from_kf  = np.linalg.norm(self.pose[:2] - self.ref_pose[:2])
-        angle_from_kf = abs(self._wrap(self.pose[2] - self.ref_pose[2]))
+        angle_from_kf = abs(wrap_angle(self.pose[2] - self.ref_pose[2]))
         if dist_from_kf >= self.kf_dist or angle_from_kf >= self.kf_angle:
             self.ref_scan   = pts_map
             self.ref_pose   = self.pose.copy()
@@ -264,13 +264,9 @@ class ICPNode(Node):
             f'LOOP CLOSURE — drift corrected: Δx={dx:.3f} Δy={dy:.3f} Δθ={math.degrees(dtheta):.1f}°')
         self.pose[0] += dx
         self.pose[1] += dy
-        self.pose[2]  = self._wrap(self.pose[2] + dtheta)
+        self.pose[2]  = wrap_angle(self.pose[2] + dtheta)
         self.scan_count  = 0
         self.loop_closed = False
-
-    @staticmethod
-    def _wrap(a: float) -> float:
-        return math.atan2(math.sin(a), math.cos(a))
 
     # ── Publishing ────────────────────────────────────────────────────
 
@@ -316,7 +312,7 @@ class ICPNode(Node):
         # T_map_odom = T_map_basefoot * inv(T_odom_basefoot)
         # Published always (identity until odom arrives) so 'map' appears in RViz immediately.
         op = self.odom_pose if self.odom_pose is not None else np.zeros(3)
-        dth = self._wrap(th - op[2])
+        dth = wrap_angle(th - op[2])
         c_d, s_d = math.cos(dth), math.sin(dth)
         tx = x - (c_d * op[0] - s_d * op[1])
         ty = y - (s_d * op[0] + c_d * op[1])

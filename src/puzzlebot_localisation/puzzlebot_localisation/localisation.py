@@ -6,8 +6,8 @@ from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 import math
-
 import numpy as np
+from .utils import wrap_angle
 
 class Localisation(Node):
     def __init__(self):
@@ -82,54 +82,49 @@ class Localisation(Node):
         # Velocidad lineal y angular
         v = self.r*(self.wr + self.wl) / 2.0 
         w = self.r*(self.wr - self.wl) / self.l
-        # Desplazamiento incremtanl  
+        # Desplazamiento incremental  
         delta_d = v * self.dt
         delta_theta = w * self.dt
 
-        # Integracion de euler (pose)
-        self.sx += delta_d * math.cos(self.stheta) 
-        self.sy += delta_d * math.sin(self.stheta)
-        self.stheta += delta_theta
-        
-        # normalizar angulo
-        self.stheta = math.atan2(math.sin(self.stheta), math.cos(self.stheta))
+        # --- Covariance propagation BEFORE state integration ---
+        # Ak and Jw must be evaluated at θ_k (current state), not θ_{k+1}
 
-        # Quaternion
-        qz = math.sin(self.stheta / 2.0)
-        qw = math.cos(self.stheta / 2.0)   
-
-        # Ak es la jacobiana de la función de transición respecto al estado, necesaria para propagar la covarianza
+        # Ak es la jacobiana de la función de transición respecto al estado
         Ak = np.array([
             [1, 0, -v * self.dt * math.sin(self.stheta)],
             [0, 1,  v * self.dt * math.cos(self.stheta)],
             [0, 0, 1]
         ]) 
 
-
-
-        # --- PROBABILISTIC LOCALISATION ADDITION: Realistic process noise Q_k ---
-        # Step 1: encoder noise covariance — proportional to wheel speed magnitude
-        # Faster wheels → larger uncertainty injected per step
+        # Encoder noise covariance — proportional to wheel speed magnitude
         Sigma_delta = np.array([
             [self.k_r * abs(self.wr), 0.0],
             [0.0,                     self.k_l * abs(self.wl)]
         ])
 
-        # Step 2: Jacobian of the motion model w.r.t. wheel velocities (wr, wl)
-        # Maps wheel-speed uncertainty into (x, y, theta) state space
+        # Jacobian of the motion model w.r.t. wheel velocities (wr, wl)
         Jw = np.array([
             [(self.r * self.dt / 2.0) * math.cos(self.stheta), (self.r * self.dt / 2.0) * math.cos(self.stheta)],
             [(self.r * self.dt / 2.0) * math.sin(self.stheta), (self.r * self.dt / 2.0) * math.sin(self.stheta)],
             [ self.r * self.dt / self.l,                       -(self.r * self.dt / self.l)]
         ])
 
-        # Step 3: Q_k = Jw @ Sigma_delta @ Jw.T
-        # Covariance grows with motion — robot standing still injects almost no uncertainty
+        # Q_k = Jw @ Sigma_delta @ Jw.T
         Qk = Jw @ Sigma_delta @ Jw.T
 
-        # Propagacion de la incertidumbre
-        # Sigma grows each step: Ak spreads existing uncertainty, Qk adds new motion noise
+        # Propagacion de la incertidumbre (Σ grows each step)
         self.Sigma = Ak @ self.Sigma @ Ak.T + Qk
+
+        # --- State integration (pose update) ---
+        self.sx += delta_d * math.cos(self.stheta) 
+        self.sy += delta_d * math.sin(self.stheta)
+        self.stheta += delta_theta
+        
+        self.stheta = wrap_angle(self.stheta)
+
+        # Quaternion
+        qz = math.sin(self.stheta / 2.0)
+        qw = math.cos(self.stheta / 2.0)
 
         current_time = self.get_clock().now().to_msg()
 
