@@ -93,30 +93,54 @@ def generate_launch_description():
         name='mcl_node',
         output='screen',
         parameters=[{
-            'use_sim_time':      use_sim_time,
-            'num_particles':     800,
-            'alpha1':            0.1,
-            'alpha2':            0.1,
-            'alpha3':            0.05,
-            'alpha4':            0.05,
-            'sigma_hit':         0.1,
-            'z_hit':             0.9,
-            'z_rand':            0.1,
-            'laser_max_range':   6.0,
-            'laser_min_range':   0.15,
-            'beam_step':         5,
-            'update_min_d':      0.05,
-            'update_min_a':      0.05,
-            'laser_angle_offset': 0.0,       # Gazebo gpu_lidar: angle=0 = sensor +X = robot forward
-            'resample_interval': 1,
-            'set_initial_pose':  False,
-            'initial_pose_x':    0.0,
-            'initial_pose_y':    0.0,
-            'initial_pose_a':    0.0,
+            'use_sim_time':       use_sim_time,
+            'num_particles':      1500,     # más partículas → mejor mantenimiento multi-hipótesis
+            'alpha1':             0.1,
+            'alpha2':             0.1,
+            'alpha3':             0.05,
+            'alpha4':             0.05,
+            'sigma_hit':          0.1,
+            'sigma_hit_global':   0.20,     # bajado de 0.30 → más discriminante en búsqueda global
+            'z_hit':              0.9,
+            'z_rand':             0.1,
+            'laser_max_range':    6.0,
+            'laser_min_range':    0.15,
+            'beam_step':          4,        # local: más beams para mejor tracking
+            'beam_step_global':   2,        # global: máxima discriminación posible
+            'update_min_d':       0.05,
+            'update_min_a':       0.05,
+            'laser_angle_offset': 0.0,
+            'resample_interval':  1,
+            'set_initial_pose':   False,
+            'initial_pose_x':     0.0,
+            'initial_pose_y':     0.0,
+            'initial_pose_a':     0.0,
         }]
     )
 
-    # ── 5. RViz ───────────────────────────────────────────────────────────
+    # ── 5. Localización activa — wandering hasta que MCL converja ────────────
+
+    active_loc_node = Node(
+        package='puzzlebot_localisation',
+        executable='active_localization',
+        name='active_localization_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time':          use_sim_time,
+            'scan_topic':            '/scan',
+            'wander_timeout':        120.0,
+            'wander_linear_speed':   0.10,
+            'wander_angular_speed':  0.50,
+            'obstacle_distance':     0.40,
+            'random_turn_interval':   5.0,
+            'convergence_hold_time':  5.0,
+            'min_conv_travel_m':      0.20,
+            'min_conv_rotation_deg':  90.0,
+            'front_half_angle_deg':   60.0,
+        }]
+    )
+
+    # ── 6. RViz ───────────────────────────────────────────────────────────
     # Strip snap's libpthread from LD_LIBRARY_PATH to avoid the GLIBC_PRIVATE error
     ld_lib = os.environ.get('LD_LIBRARY_PATH', '')
     ld_lib_clean = ':'.join(p for p in ld_lib.split(':') if 'snap' not in p)
@@ -138,5 +162,6 @@ def generate_launch_description():
         map_server,
         lifecycle_manager,
         mcl_node,
+        active_loc_node,
         rviz_node,
     ])

@@ -145,7 +145,31 @@ def generate_launch_description():
         remappings=[('/scan', '/scan_fixed')]
     )
 
-    # ── 6. RViz ───────────────────────────────────────────────────────────
+    # ── 6. Localización activa — wandering hasta que MCL converja ────────────
+    # scan_topic apunta al scan con timestamps corregidos, igual que mcl_node.
+    # Velocidades conservadoras para el hardware real.
+
+    active_loc_node = Node(
+        package='puzzlebot_localisation',
+        executable='active_localization',
+        name='active_localization_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time':          use_sim_time,
+            'scan_topic':            '/scan_fixed',
+            'wander_timeout':        120.0,
+            'wander_linear_speed':   0.08,
+            'wander_angular_speed':  0.40,
+            'obstacle_distance':     0.40,
+            'random_turn_interval':   5.0,
+            'convergence_hold_time':  5.0,
+            'min_conv_travel_m':      0.20,
+            'min_conv_rotation_deg':  90.0,
+            'front_half_angle_deg':   60.0,
+        }]
+    )
+
+    # ── 7. RViz ───────────────────────────────────────────────────────────
     # Strip snap's libpthread from LD_LIBRARY_PATH to avoid the GLIBC_PRIVATE error
     ld_lib = os.environ.get('LD_LIBRARY_PATH', '')
     ld_lib_clean = ':'.join(p for p in ld_lib.split(':') if 'snap' not in p)
@@ -175,5 +199,6 @@ def generate_launch_description():
         map_server,
         lifecycle_manager,
         mcl_node,
+        active_loc_node,
         rviz_node,
     ])

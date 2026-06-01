@@ -10,6 +10,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from nav_msgs.msg import Path
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool
 
 from .utils import quat_to_yaw, wrap_angle
 
@@ -78,6 +79,7 @@ class DWANode(Node):
         self._wp: list[tuple[float, float]] = []
         self._pose_ready = False
         self._rx = self._ry = self._rth = 0.0
+        self._wandering = False     # True cuando active_localization controla cmd_vel
 
         self.create_subscription(
             LaserScan, scan_topic, self._scan_cb, _RELIABLE)
@@ -87,6 +89,8 @@ class DWANode(Node):
             Path, '/global_path', self._path_cb, _RELIABLE)
         self.create_subscription(
             PoseWithCovarianceStamped, '/mcl_pose', self._pose_cb, _RELIABLE)
+        self.create_subscription(
+            Bool, '/mcl_wandering', self._wandering_cb, 10)
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', _RELIABLE)
         self.create_timer(1.0 / ctrl_rate, self._loop)
@@ -96,6 +100,9 @@ class DWANode(Node):
             f'sim={self._sim_t}s/{self._sim_dt}s | '
             f'samples={self._n_v}×{self._n_w}={self._n_v*self._n_w} | '
             f'scan={scan_topic}')
+
+    def _wandering_cb(self, msg: Bool):
+        self._wandering = msg.data
 
     def _scan_cb(self, msg: LaserScan):
         """Convierte el LaserScan a puntos (x,y) en el frame del robot."""
@@ -128,6 +135,10 @@ class DWANode(Node):
             self._pose_ready = True
 
     def _loop(self):
+        # Ceder control a active_localization_node durante re-localización activa
+        if self._wandering:
+            return
+
         # Sin datos suficientes → parar (seguro por defecto)
         if self._scan_xy is None or not self._ref_updated or not self._pose_ready:
             self._pub_stop()

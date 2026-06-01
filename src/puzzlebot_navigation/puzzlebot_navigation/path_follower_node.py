@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from nav_msgs.msg import Path
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, PoseStamped
+from std_msgs.msg import Empty
 
 from .utils import quat_to_yaw, wrap_angle
 
@@ -68,6 +69,7 @@ class PathFollowerNode(Node):
         self.create_subscription(Path, '/global_path', self._path_cb, _RELIABLE)
         self.create_subscription(
             PoseWithCovarianceStamped, '/mcl_pose', self._pose_cb, _RELIABLE)
+        self.create_subscription(Empty, '/cancel_navigation', self._cancel_cb, 10)
         self.declare_parameter('output_topic', '/cmd_vel_reference')
         out_topic = self.get_parameter('output_topic').value
         self._pub      = self.create_publisher(Twist, out_topic, _RELIABLE)
@@ -79,6 +81,14 @@ class PathFollowerNode(Node):
             f'path_follower listo | L={self._L}m v={self._v_max}m/s '
             f'align>{self.get_parameter("align_threshold_deg").value:.0f}° '
             f'drive<{self.get_parameter("drive_threshold_deg").value:.0f}°')
+
+    def _cancel_cb(self, _msg):
+        if self._state not in (_IDLE, _DONE):
+            self.get_logger().warn('Navegación cancelada (re-localización activa)')
+        self._state        = _IDLE
+        self._wp           = []
+        self._current_goal = None
+        self._stop()
 
     def _path_cb(self, msg: Path):
         if not msg.poses:

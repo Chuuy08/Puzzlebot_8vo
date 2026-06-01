@@ -133,15 +133,28 @@ class RRTNode(Node):
             goal_a  = np.array(goal,  dtype=np.float64)
 
             if not self._pt_free(start_a, grid):
-                self.get_logger().error(
-                    f'El inicio ({start[0]:.2f},{start[1]:.2f}) está en un '
-                    f'obstáculo. Verifica la localización del robot.')
-                return
+                snapped = self._snap_to_free(start_a, grid)
+                if snapped is None:
+                    self.get_logger().error(
+                        f'Inicio ({start[0]:.2f},{start[1]:.2f}) en obstáculo sólido. '
+                        f'Verifica la localización del robot.')
+                    return
+                self.get_logger().warn(
+                    f'Inicio en zona inflada → ajustado a '
+                    f'({float(snapped[0]):.2f},{float(snapped[1]):.2f})')
+                start_a = snapped
+
             if not self._pt_free(goal_a, grid):
-                self.get_logger().error(
-                    f'El goal ({goal[0]:.2f},{goal[1]:.2f}) está en un '
-                    f'obstáculo. Elige un punto en espacio libre (blanco en RViz).')
-                return
+                snapped = self._snap_to_free(goal_a, grid)
+                if snapped is None:
+                    self.get_logger().error(
+                        f'Goal ({goal[0]:.2f},{goal[1]:.2f}) en obstáculo sólido. '
+                        f'Elige un punto en espacio libre (blanco en RViz).')
+                    return
+                self.get_logger().warn(
+                    f'Goal en zona inflada → ajustado a '
+                    f'({float(snapped[0]):.2f},{float(snapped[1]):.2f})')
+                goal_a = snapped
 
             path = self._birrt(start_a, goal_a, grid)
 
@@ -240,6 +253,38 @@ class RRTNode(Node):
         if dist <= self._step:
             return to_pt.copy()
         return from_pt + (d / dist) * self._step
+
+    def _snap_to_free(self, pt: np.ndarray, grid: np.ndarray,
+                      max_radius_m: float = 0.30) -> 'np.ndarray | None':
+        """
+        Si pt cae en celda inflada (99), devuelve la celda libre más cercana
+        dentro de max_radius_m.  Si cae en obstáculo sólido (100) o fuera del
+        mapa, devuelve None.
+        """
+        r0, c0 = self._w2c(float(pt[0]), float(pt[1]))
+        if not (0 <= r0 < self._map_H and 0 <= c0 < self._map_W):
+            return None
+        val = int(grid[r0, c0])
+        if val == 0:
+            return pt
+        if val == 100:
+            return None   # obstáculo sólido — no snap
+
+        # val == 99 (inflado): buscar celda libre más cercana en la vecindad
+        max_px  = max(1, int(math.ceil(max_radius_m / self._map_res)))
+        r_min = max(0, r0 - max_px);  r_max = min(self._map_H, r0 + max_px + 1)
+        c_min = max(0, c0 - max_px);  c_max = min(self._map_W, c0 + max_px + 1)
+
+        sub   = grid[r_min:r_max, c_min:c_max]
+        fr, fc = np.where(sub == 0)
+        if len(fr) == 0:
+            return None
+
+        dr    = fr - (r0 - r_min)
+        dc    = fc - (c0 - c_min)
+        best  = int(np.argmin(dr * dr + dc * dc))
+        return np.array(self._c2w(fr[best] + r_min, fc[best] + c_min),
+                        dtype=np.float64)
 
     def _pt_free(self, pt: np.ndarray, grid: np.ndarray) -> bool:
         """True si el punto cae en una celda libre (valor 0) del costmap."""

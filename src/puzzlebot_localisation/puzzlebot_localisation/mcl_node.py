@@ -7,6 +7,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry, OccupancyGrid
 from geometry_msgs.msg import (Pose, PoseArray,
                                 PoseWithCovarianceStamped, TransformStamped)
+from std_msgs.msg import Bool
 from tf2_ros import TransformBroadcaster
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 from scipy.ndimage import distance_transform_edt
@@ -19,8 +20,12 @@ class MCLNode(Node):
     _ALPHA_FAST = 0.1
 
     # Quality thresholds for convergence state machine
-    _CONVERGE_THRESH = 0.62   # quality above this → switch to tracking mode
+    _CONVERGE_THRESH = 0.70   # quality above this (raised — more conservative against false positives)
     _DIVERGE_THRESH  = 0.28   # quality below this → switch back to global mode
+
+    # Particle spread thresholds: convergence also requires particles to be clustered
+    _CONVERGE_MAX_SPREAD = 0.25   # [m] sqrt(cov_x+cov_y) must be ≤ this to converge
+    _DIVERGE_MAX_SPREAD  = 0.60   # [m] if spread exceeds this, declare lost
 
     def __init__(self):
         super().__init__('mcl_node')
@@ -136,9 +141,11 @@ class MCLNode(Node):
 
         self.pose_pub  = self.create_publisher(PoseWithCovarianceStamped, 'mcl_pose',       10)
         self.cloud_pub = self.create_publisher(PoseArray,                  'particle_cloud', 10)
+        self.conv_pub  = self.create_publisher(Bool,                       '/mcl_converged', 10)
         self.tf_br     = TransformBroadcaster(self)
 
         self.create_timer(0.1, self._tf_heartbeat)
+        self.create_timer(1.0, self._publish_converged_state)
 
         self.get_logger().info(
             f'MCL ready | N={self.N} | σ_local={self._sigma_local} '
@@ -317,6 +324,19 @@ class MCLNode(Node):
 
             log_w += np.log(np.maximum(p, 1e-300))
 
+        # Penalize particles in obstacle cells BEFORE computing quality.
+        # A wall-hugging particle scores well by projecting beams onto neighboring
+        # walls, which inflates quality and causes false convergence detections.
+        dx_p  = self.particles[:, 0] - self.map_origin[0]
+        dy_p  = self.particles[:, 1] - self.map_origin[1]
+        p_col = (( dx_p * self.map_cos + dy_p * self.map_sin) / self.map_res).astype(int)
+        p_row = ((-dx_p * self.map_sin + dy_p * self.map_cos) / self.map_res).astype(int)
+        p_inb = (p_col >= 0) & (p_col < self.map_w) & (p_row >= 0) & (p_row < self.map_h)
+        p_cc  = np.clip(p_col, 0, self.map_w - 1)
+        p_rc  = np.clip(p_row, 0, self.map_h - 1)
+        on_wall = (~p_inb) | (self.dist_map[p_rc, p_cc] < self.map_res * 0.5)
+        log_w[on_wall] = -300.0
+
         n_beams    = len(r_sub)
         avg_log_pb = float(log_w.mean()) / n_beams
         log_min = math.log(max(1e-300, self.z_rand / self.laser_max))
@@ -324,17 +344,6 @@ class MCLNode(Node):
         rng     = log_hi - log_min
         quality = (avg_log_pb - log_min) / rng if rng > 0.0 else 0.5
         quality = max(0.0, min(1.0, quality))
-
-        if not self._converged and quality > self._CONVERGE_THRESH:
-            self._converged = True
-            self.get_logger().info(
-                f'MCL converged (quality={quality:.2f}) → tracking mode '
-                f'σ={self._sigma_local} step={self._step_local}')
-        elif self._converged and quality < self._DIVERGE_THRESH:
-            self._converged = False
-            self.get_logger().warn(
-                f'MCL lost localization (quality={quality:.2f}) → global mode '
-                f'σ={self._sigma_global} step={self._step_global}')
 
         self.w_slow += self._ALPHA_SLOW * (quality - self.w_slow)
         self.w_fast += self._ALPHA_FAST * (quality - self.w_fast)
@@ -352,6 +361,24 @@ class MCLNode(Node):
         cov_x  = float(np.dot(self.weights, dx_p * dx_p))
         cov_xy = float(np.dot(self.weights, dx_p * dy_p))
         cov_y  = float(np.dot(self.weights, dy_p * dy_p))
+        pos_spread = math.sqrt(cov_x + cov_y)
+
+        # Convergence requires BOTH good scan quality AND tight particle cluster.
+        # Evaluated after covariance — prevents false positives where quality spikes
+        # momentarily on geometrically ambiguous positions (symmetric corridors, etc).
+        if not self._converged and quality > self._CONVERGE_THRESH and pos_spread < self._CONVERGE_MAX_SPREAD:
+            self._converged = True
+            self.conv_pub.publish(Bool(data=True))
+            self.get_logger().info(
+                f'MCL converged (quality={quality:.2f} spread={pos_spread:.2f}m) → tracking mode '
+                f'σ={self._sigma_local} step={self._step_local}')
+        elif self._converged and (quality < self._DIVERGE_THRESH or pos_spread > self._DIVERGE_MAX_SPREAD):
+            self._converged = False
+            self.conv_pub.publish(Bool(data=False))
+            self.get_logger().warn(
+                f'MCL lost localization (quality={quality:.2f} spread={pos_spread:.2f}m) → global mode '
+                f'σ={self._sigma_global} step={self._step_global}')
+
         self._mcl_pose = (wx, wy, wth, cov_x, cov_xy, cov_y)
 
     def _resample(self):
@@ -408,20 +435,12 @@ class MCLNode(Node):
         q   = msg.pose.pose.orientation
         yaw = quat_to_yaw(q)
 
-        if not self._converged:
-            # Not yet localized → global re-localization seeded around the clicked
-            # region (radius ≈ 1.5m) with random orientation.  Covers the whole
-            # map if the room is small; still biases toward the clicked area so
-            # convergence is faster than a fully uniform global search.
-            self._seed_particles_around(x, y, yaw, 1.2,
-                                        math.pi)   # full-circle angle uncertainty
-            mode_str = 'global-biased (not yet converged)'
-        else:
-            # Already tracking → tight reset around the clicked pose + arrow direction.
-            self._seed_particles_around(x, y, yaw,
-                                        self._spread_xy, self._spread_a)
-            mode_str = (f'local spread_xy={self._spread_xy}m '
-                        f'spread_a={math.degrees(self._spread_a):.0f}°')
+        # Always respect the arrow direction drawn in RViz — the user is explicitly
+        # specifying both position and orientation.  Using math.pi as the angular
+        # spread was ignoring the arrow and producing random orientations.
+        self._seed_particles_around(x, y, yaw, self._spread_xy, self._spread_a)
+        mode_str = (f'spread_xy={self._spread_xy}m '
+                    f'spread_a={math.degrees(self._spread_a):.0f}°')
 
         self.w_slow     = 0.0
         self.w_fast     = 0.0
@@ -434,6 +453,9 @@ class MCLNode(Node):
         self.get_logger().info(
             f'2D Pose Estimate [{mode_str}]: '
             f'({x:.2f}, {y:.2f}) yaw={math.degrees(yaw):.1f}°')
+
+    def _publish_converged_state(self):
+        self.conv_pub.publish(Bool(data=self._converged))
 
     def _tf_heartbeat(self):
         self._publish_tf(self.get_clock().now().to_msg())
