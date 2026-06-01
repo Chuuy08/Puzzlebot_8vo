@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""Republish /scan_raw with current ROS clock timestamp → /scan.
-
-The RPLidar driver uses an internal hardware clock that drifts from the system
-clock. This relay overwrites the header stamp so TF lookups work correctly.
-
-Subscriber QoS uses RELIABLE to be compatible with both RELIABLE and
-BEST_EFFORT sllidar publishers (different driver versions use different QoS).
-"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
@@ -15,7 +7,6 @@ from sensor_msgs.msg import LaserScan
 # RELIABLE matches both sllidar driver versions:
 #   - sllidar_ros2 v1.x: BEST_EFFORT  → RELIABLE subscriber = incompatible, use BEST_EFFORT
 #   - sllidar_ros2 v2.x: RELIABLE     → RELIABLE subscriber = compatible
-# At startup the node logs which side it connected from.
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.VOLATILE,

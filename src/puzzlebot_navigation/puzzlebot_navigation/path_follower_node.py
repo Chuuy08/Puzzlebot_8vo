@@ -1,26 +1,6 @@
 #!/usr/bin/env python3
-"""
-path_follower_node.py — Paso 4: Pure Pursuit con máquina de estados ALIGN→DRIVE.
-
-Suscribe:
-  /global_path  nav_msgs/Path
-  /mcl_pose     geometry_msgs/PoseWithCovarianceStamped
-
-Publica:
-  /cmd_vel      geometry_msgs/Twist
-
-Máquina de estados:
-  IDLE  → sin path
-  ALIGN → girando en el lugar hasta apuntar al lookahead (error < drive_thresh)
-  DRIVE → Pure Pursuit con velocidad adaptativa según curvatura
-  DONE  → goal alcanzado
-
-Correcciones respecto a versión anterior:
-  1. Siempre empieza en ALIGN al recibir un path nuevo.
-  2. Umbral de rotación-en-lugar: 35° (no 90°).
-  3. Velocidad adaptativa: v = v_max / (1 + k_curv·|κ|·L) → más lento en curvas cerradas.
-  4. Lookahead por interpolación de segmentos → sigue la línea, no salta entre waypoints.
-"""
+# /global_path + /mcl_pose → path_follower → /cmd_vel_reference
+# Estados: IDLE → ALIGN (giro en lugar) → DRIVE (Pure Pursuit) → DONE
 
 import math
 import rclpy
@@ -50,7 +30,6 @@ class PathFollowerNode(Node):
     def __init__(self):
         super().__init__('path_follower_node')
 
-        # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('lookahead_distance',  0.40)  # [m]
         self.declare_parameter('linear_speed',        0.18)  # [m/s]
         self.declare_parameter('max_angular_speed',   1.20)  # [rad/s]
@@ -75,29 +54,23 @@ class PathFollowerNode(Node):
         self._stuck_dist    = self.get_parameter('stuck_dist').value
         self._max_deviation = self.get_parameter('max_path_deviation').value
 
-        # ── Estado interno ────────────────────────────────────────────────
         self._wp: list[tuple[float, float]] = []
         self._seg_idx   = 0
         self._state     = _IDLE
         self._rx = self._ry = self._rth = 0.0
         self._pose_ready = False
-
-        # Goal actual (para re-planificación automática)
         self._current_goal: tuple[float, float] | None = None
 
-        # Detección de atasco
         self._last_prog_x    = 0.0
         self._last_prog_y    = 0.0
         self._last_prog_time = None   # rclpy.time.Time
 
-        # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(Path, '/global_path', self._path_cb, _RELIABLE)
         self.create_subscription(
             PoseWithCovarianceStamped, '/mcl_pose', self._pose_cb, _RELIABLE)
         self.declare_parameter('output_topic', '/cmd_vel_reference')
         out_topic = self.get_parameter('output_topic').value
         self._pub      = self.create_publisher(Twist, out_topic, _RELIABLE)
-        # Publicador de re-planificación: envía el mismo goal al RRT
         self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', _RELIABLE)
         self.get_logger().info(f'output_topic={out_topic}')
         self.create_timer(1.0 / ctrl_rate, self._loop)
@@ -106,10 +79,6 @@ class PathFollowerNode(Node):
             f'path_follower listo | L={self._L}m v={self._v_max}m/s '
             f'align>{self.get_parameter("align_threshold_deg").value:.0f}° '
             f'drive<{self.get_parameter("drive_threshold_deg").value:.0f}°')
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Callbacks
-    # ══════════════════════════════════════════════════════════════════════
 
     def _path_cb(self, msg: Path):
         if not msg.poses:
@@ -133,19 +102,13 @@ class PathFollowerNode(Node):
         if not self._pose_ready:
             self._pose_ready = True
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Bucle de control principal
-    # ══════════════════════════════════════════════════════════════════════
-
     def _loop(self):
         if self._state in (_IDLE, _DONE) or not self._pose_ready:
             self._stop()
             return
 
-        # ── Detección de atasco → re-planificación automática ────────────
         self._check_stuck()
 
-        # ── Goal alcanzado ────────────────────────────────────────────────
         gx, gy = self._wp[-1]
         dist_goal = math.hypot(gx - self._rx, gy - self._ry)
         if dist_goal < self._g_tol:
@@ -154,20 +117,15 @@ class PathFollowerNode(Node):
             self.get_logger().info(f'Goal alcanzado | error={dist_goal:.3f} m')
             return
 
-        # ── Punto lookahead por interpolación de segmentos ────────────────
         lx, ly = self._lookahead()
 
-        # Error de rumbo hacia el lookahead
         desired = math.atan2(ly - self._ry, lx - self._rx)
         err     = wrap_angle(desired - self._rth)
 
-        # ── Máquina de estados ────────────────────────────────────────────
         if self._state == _ALIGN:
             self._do_align(err)
         elif self._state == _DRIVE:
             self._do_drive(lx, ly, err, dist_goal)
-
-    # ── Estado ALIGN: girar en el lugar ───────────────────────────────────
 
     def _do_align(self, err: float):
         """
@@ -181,7 +139,6 @@ class PathFollowerNode(Node):
                 f'Alineado → DRIVE | err={math.degrees(err):.1f}°')
             return
 
-        # Velocidad angular proporcional al error (más suave al final)
         w = math.copysign(
             min(self._w_max, max(0.3, abs(err)) * 0.8),
             err)
@@ -189,22 +146,18 @@ class PathFollowerNode(Node):
         t.angular.z = float(w)
         self._pub.publish(t)
 
-    # ── Estado DRIVE: Pure Pursuit con velocidad adaptativa ───────────────
-
     def _do_drive(self, lx: float, ly: float, err: float, dist_goal: float):
         """
         Pure Pursuit.
         Si el error de rumbo supera align_threshold → vuelve a ALIGN.
         Velocidad adaptativa: se reduce cuanto más cerrada es la curva.
         """
-        # Si la curva se volvió muy cerrada, volver a alinear primero
         if abs(err) > self._align_th:
             self._state = _ALIGN
             self.get_logger().info(
                 f'Curva cerrada → ALIGN | err={math.degrees(err):.1f}°')
             return
 
-        # Transformar lookahead al frame del robot
         dx = lx - self._rx
         dy = ly - self._ry
         c, s   = math.cos(self._rth), math.sin(self._rth)
@@ -232,10 +185,6 @@ class PathFollowerNode(Node):
         t.linear.x  = float(v)
         t.angular.z = float(omega)
         self._pub.publish(t)
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Lookahead por interpolación de segmentos
-    # ══════════════════════════════════════════════════════════════════════
 
     def _lookahead(self) -> tuple[float, float]:
         """
@@ -310,10 +259,6 @@ class PathFollowerNode(Node):
 
         return wp[-1]
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Detección de atasco y re-planificación automática
-    # ══════════════════════════════════════════════════════════════════════
-
     def _check_stuck(self):
         """
         Detecta si el robot lleva más de stuck_time segundos sin avanzar
@@ -328,19 +273,16 @@ class PathFollowerNode(Node):
             self._ry - self._last_prog_y)
 
         if dist_moved >= self._stuck_dist:
-            # El robot avanzó — actualizar referencia
             self._last_prog_x    = self._rx
             self._last_prog_y    = self._ry
             self._last_prog_time = self.get_clock().now()
             return
 
-        # Sin progreso — comprobar tiempo
         elapsed = (self.get_clock().now() - self._last_prog_time).nanoseconds / 1e9
         if elapsed >= self._stuck_time:
             self.get_logger().warn(
                 f'Robot atascado {elapsed:.1f}s sin avanzar → re-planificando')
             self._trigger_replan()
-            # Resetear timer para no disparar repetidamente
             self._last_prog_time = self.get_clock().now()
 
     def _trigger_replan(self):
@@ -357,7 +299,6 @@ class PathFollowerNode(Node):
         self._goal_pub.publish(msg)
         self.get_logger().info(f'Re-plan → goal=({gx:.2f},{gy:.2f})')
 
-    # ══════════════════════════════════════════════════════════════════════
     def _stop(self):
         self._pub.publish(Twist())
 

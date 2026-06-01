@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-ICP Occupancy Grid Node — builds a 2-D map from ICP pose + LaserScan.
-
-Package : puzzlebot_localisation
-File    : puzzlebot_localisation/occupancy_grid_node.py
-Run     : ros2 run puzzlebot_localisation icp_map_node
-
-Subscribes:
-  ~/icp_odom  (nav_msgs/Odometry)   — robot pose from icp_node
-  ~/scan      (sensor_msgs/LaserScan)
-Publishes:
-  ~/icp_map   (nav_msgs/OccupancyGrid)
-"""
 
 import math
 import numpy as np
@@ -27,7 +14,6 @@ class OccupancyGridNode(Node):
     def __init__(self):
         super().__init__('icp_map_node')
 
-        # ── Parameters ────────────────────────────────────────────────
         self.declare_parameter('resolution',   0.05)   # m/cell
         self.declare_parameter('grid_size',    200)    # cells → 200*0.05 = 10 m
         self.declare_parameter('map_frame',    'map')
@@ -42,25 +28,19 @@ class OccupancyGridNode(Node):
         self.ox = -(self.size * self.res / 2.0)   # world x at col=0
         self.oy = -(self.size * self.res / 2.0)   # world y at row=0
 
-        # ── Log-odds grid ─────────────────────────────────────────────
-        # 0 = unknown (never visited).
-        # Positive → probably occupied; Negative → probably free.
+        # 0 = unknown, positive = occupied, negative = free
         self.log_odds = np.zeros((self.size, self.size), dtype=np.float32)
 
-        # Asymmetric update: slow to erase, fast to mark occupied.
-        # This makes the map robust to small pose errors from ICP drift.
-        # A wall needs many contradicting rays to be erased (unlikely if drift is small).
+
         self.L_FREE = -0.10   # very slow to erase walls (noise resistant)
         self.L_OCC  =  0.7   # slightly softer occupied update (reduces noise spikes)
         self.L_MIN  = -2.0
         self.L_MAX  =  4.0   # lower saturation → walls can be corrected if pose improves
 
-        # ── Robot pose (updated from icp_odom) ────────────────────────
         self.rx = 0.0
         self.ry = 0.0
         self.rth = 0.0
 
-        # ── ROS I/O ───────────────────────────────────────────────────
         self.odom_sub = self.create_subscription(
             Odometry, 'icp_odom', self._odom_cb, 10)
         self.scan_sub = self.create_subscription(
@@ -72,9 +52,6 @@ class OccupancyGridNode(Node):
             f'ICP map node ready | {self.size}×{self.size} cells '
             f'@ {self.res} m/cell = {self.size*self.res:.1f} m side')
 
-    # ══════════════════════════════════════════════════════════════════
-    # Callbacks
-    # ══════════════════════════════════════════════════════════════════
 
     def _odom_cb(self, msg: Odometry):
         """Store latest robot pose from ICP node."""
@@ -86,7 +63,6 @@ class OccupancyGridNode(Node):
     def _scan_cb(self, msg: LaserScan):
         """Update occupancy grid with one laser scan."""
 
-        # 1. Robot cell
         r0, c0 = self._world_to_cell(self.rx, self.ry)
         if not self._in_bounds(r0, c0):
             self.get_logger().warn('Robot outside grid — increase grid_size', once=True)
@@ -103,33 +79,23 @@ class OccupancyGridNode(Node):
             if not (msg.range_min <= r <= msg.range_max) or not math.isfinite(r):
                 continue
 
-            # 2. Hit point in world frame
             hx = self.rx + r * math.cos(world_angles[i])
             hy = self.ry + r * math.sin(world_angles[i])
             r1, c1 = self._world_to_cell(hx, hy)
 
-            # 3. Ray trace from robot to hit point
-            #    All cells along the ray (vectorised Bresenham via linspace)
             rows, cols = self._raytrace(r0, c0, r1, c1)
             if len(rows) == 0:
                 continue
 
-            # 4. Mark ray cells as FREE (all but the last)
-            #    Mark hit cell as OCCUPIED
             if len(rows) > 1:
                 self.log_odds[rows[:-1], cols[:-1]] += self.L_FREE
             if self._in_bounds(r1, c1):
                 self.log_odds[r1, c1] += self.L_OCC
 
-        # 5. Clamp to prevent saturation (keeps map updatable)
+        # Clamp para que las celdas sigan siendo corregibles si la pose mejora
         np.clip(self.log_odds, self.L_MIN, self.L_MAX, out=self.log_odds)
 
-    # ══════════════════════════════════════════════════════════════════
-    # Grid utilities
-    # ══════════════════════════════════════════════════════════════════
-
     def _world_to_cell(self, wx: float, wy: float):
-        """World coordinates (m) → (row, col) grid indices."""
         col = int((wx - self.ox) / self.res)
         row = int((wy - self.oy) / self.res)
         return row, col
@@ -149,10 +115,6 @@ class OccupancyGridNode(Node):
         cols = np.round(np.linspace(c0, c1, n)).astype(int)
         valid = (rows >= 0) & (rows < self.size) & (cols >= 0) & (cols < self.size)
         return rows[valid], cols[valid]
-
-    # ══════════════════════════════════════════════════════════════════
-    # Map publishing
-    # ══════════════════════════════════════════════════════════════════
 
     def _publish_map(self):
         """

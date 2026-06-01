@@ -146,16 +146,12 @@ class MCLNode(Node):
             f'step_global={self._step_global} | upd_a={math.degrees(self.upd_a):.1f}° '
             f'| laser_offset={math.degrees(self.laser_offset):.1f}°')
 
-    # ── Helpers ───────────────────────────────────────────────────────────
-
     def _seed_particles_around(self, x: float, y: float, a: float,
                                 sxy: float, sa: float):
         self.particles[:, 0] = np.random.normal(x, sxy, self.N)
         self.particles[:, 1] = np.random.normal(y, sxy, self.N)
         self.particles[:, 2] = wrap_angle_v(np.random.normal(a, sa, self.N))
         self.weights[:] = 1.0 / self.N
-
-    # ── Map ───────────────────────────────────────────────────────────────
 
     def _map_cb(self, msg: OccupancyGrid):
         self.map_res    = msg.info.resolution
@@ -178,8 +174,6 @@ class MCLNode(Node):
 
         if not self.initialized:
             self._global_localization()
-
-    # ── Global localization ───────────────────────────────────────────────
 
     def _global_localization(self):
         if self.free_cells is None or len(self.free_cells) == 0:
@@ -234,8 +228,6 @@ class MCLNode(Node):
             return global_p
         return np.vstack([np.column_stack([x_f, y_f, th_f]), global_p])
 
-    # ── Odometry motion model ─────────────────────────────────────────────
-
     def _odom_cb(self, msg: Odometry):
         x  = msg.pose.pose.position.x
         y  = msg.pose.pose.position.y
@@ -284,8 +276,6 @@ class MCLNode(Node):
         self.accum_a += abs(dth)
         self.prev_odom = curr
 
-    # ── Sensor model (adaptive likelihood field) ──────────────────────────
-
     def _sensor_model(self, scan: LaserScan):
         # Use loose parameters during global search, tight parameters when tracking.
         sigma     = self._sigma_local  if self._converged else self._sigma_global
@@ -327,7 +317,6 @@ class MCLNode(Node):
 
             log_w += np.log(np.maximum(p, 1e-300))
 
-        # ── Quality tracking and convergence state machine ────────────────
         n_beams    = len(r_sub)
         avg_log_pb = float(log_w.mean()) / n_beams
         log_min = math.log(max(1e-300, self.z_rand / self.laser_max))
@@ -349,7 +338,6 @@ class MCLNode(Node):
 
         self.w_slow += self._ALPHA_SLOW * (quality - self.w_slow)
         self.w_fast += self._ALPHA_FAST * (quality - self.w_fast)
-        # ─────────────────────────────────────────────────────────────────
 
         log_w -= log_w.max()
         self.weights = np.exp(log_w)
@@ -365,8 +353,6 @@ class MCLNode(Node):
         cov_xy = float(np.dot(self.weights, dx_p * dy_p))
         cov_y  = float(np.dot(self.weights, dy_p * dy_p))
         self._mcl_pose = (wx, wy, wth, cov_x, cov_xy, cov_y)
-
-    # ── Mixture MCL resampling ────────────────────────────────────────────
 
     def _resample(self):
         if self.w_slow > 0.05:
@@ -386,7 +372,7 @@ class MCLNode(Node):
                 f'Mixture MCL: injecting {n_rand}/{self.N} random particles '
                 f'(q_slow={self.w_slow:.3f} q_fast={self.w_fast:.3f})')
 
-        # Systematic (low-variance) resampling
+        # Low-variance (systematic) resampling
         cumsum = np.cumsum(self.weights)
         cumsum[-1] = 1.0
         step      = 1.0 / n_keep
@@ -415,8 +401,6 @@ class MCLNode(Node):
 
         self.particles = np.vstack(parts)
         self.weights[:] = 1.0 / self.N
-
-    # ── Initial pose from RViz "2D Pose Estimate" ─────────────────────────
 
     def _init_pose_cb(self, msg: PoseWithCovarianceStamped):
         x = msg.pose.pose.position.x
@@ -451,12 +435,8 @@ class MCLNode(Node):
             f'2D Pose Estimate [{mode_str}]: '
             f'({x:.2f}, {y:.2f}) yaw={math.degrees(yaw):.1f}°')
 
-    # ── TF heartbeat ──────────────────────────────────────────────────────
-
     def _tf_heartbeat(self):
         self._publish_tf(self.get_clock().now().to_msg())
-
-    # ── Scan callback: main MCL loop ──────────────────────────────────────
 
     def _scan_cb(self, scan: LaserScan):
         if self.prev_odom is None:
@@ -472,8 +452,6 @@ class MCLNode(Node):
             self.accum_a = 0.0
 
         self._publish(scan.header.stamp)
-
-    # ── Estimate & publishing ─────────────────────────────────────────────
 
     def _best_estimate(self):
         wx  = float(np.dot(self.weights, self.particles[:, 0]))

@@ -1,18 +1,5 @@
 """
-navigation_launch.py — Navegación autónoma completa (sin Nav2).
-
-Lanza los 4 nodos de navegación:
-  costmap_node       → /costmap  (mapa estático + obstáculos LiDAR)
-  rrt_node           → /global_path  (path global bidireccional)
-  path_follower_node → /cmd_vel_reference  (Pure Pursuit)
-  dwa_node           → /cmd_vel  (evasión local de obstáculos)
-
-Uso:
-  # Terminal 1 — simulación
-  ros2 launch puzzlebot_navigation mcl_launch.py
-
-  # Terminal 2 — navegación
-  ros2 launch puzzlebot_navigation navigation_launch.py
+navigation_launch.py — Navegación autónoma completa
 
   # Robot real (cambiar scan_topic y laser_angle_offset):
   ros2 launch puzzlebot_navigation navigation_launch.py \\

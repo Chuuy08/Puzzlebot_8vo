@@ -1,30 +1,6 @@
-    #!/usr/bin/env python3
-"""
-dwa_node.py — Paso 5: Control local con Dynamic Window Approach.
-
-Arquitectura completa:
-  path_follower → /cmd_vel_reference ──┐
-  /scan (LiDAR) ──────────────────────→ dwa_node → /cmd_vel → PuzzleBot
-  /global_path + /mcl_pose ───────────┘
-
-El DWA recibe la velocidad deseada del path_follower y encuentra la
-velocidad MÁS CERCANA a esa que sea segura frente a obstáculos detectados
-por el LiDAR en tiempo real. Opera en el frame LOCAL del robot: no necesita
-transforms de mapa, funciona con sim y robot real por igual.
-
-Algoritmo:
-  1. Ventana dinámica: velocidades alcanzables desde (v_curr, ω_curr)
-     dado los límites de aceleración en un paso de control.
-  2. Para cada (v, ω) en la ventana:
-     a. Simular trayectoria circular por sim_time segundos.
-     b. Calcular distancia mínima a los puntos del scan (obstacles).
-     c. Descartar si distancia < robot_radius (colisión).
-  3. Entre las trayectorias seguras, puntuar con:
-     - heading : el ángulo final apunta al lookahead del path global
-     - clearance: cuanto más lejos de obstáculos mejor
-     - velocity : preferir velocidad cercana a la referencia del path_follower
-  4. Publicar la (v, ω) con mayor puntuación.
-"""
+#!/usr/bin/env python3
+# /cmd_vel_reference + /scan → dwa_node → /cmd_vel
+# Samplea (v,ω) en la ventana dinámica, simula trayectorias y publica la más segura.
 
 import math
 import numpy as np
@@ -50,7 +26,6 @@ class DWANode(Node):
     def __init__(self):
         super().__init__('dwa_node')
 
-        # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('v_max',          0.20)   # velocidad lineal máxima [m/s]
         self.declare_parameter('omega_max',       1.20)  # velocidad angular máxima [rad/s]
         self.declare_parameter('accel_v',         0.80)  # aceleración lineal [m/s²]
@@ -87,29 +62,23 @@ class DWANode(Node):
         scan_topic        = self.get_parameter('scan_topic').value
         ctrl_rate         = self.get_parameter('control_rate').value
 
-        # Pasos de simulación
         self._n_steps = max(2, int(self._sim_t / self._sim_dt))
         self._t_arr   = np.linspace(self._sim_dt, self._sim_t, self._n_steps)
 
-        # ── Estado interno ────────────────────────────────────────────────
         # Puntos del scan en frame robot: array (N, 2) con (x, y) en metros
         self._scan_xy: np.ndarray | None = None
 
-        # Velocidad actual estimada (última publicada)
         self._curr_v = 0.0
         self._curr_w = 0.0
 
-        # Velocidad de referencia del path_follower
         self._ref_v = 0.0
         self._ref_w = 0.0
         self._ref_updated = False   # True cuando llega /cmd_vel_reference
 
-        # Path global para calcular goal heading
         self._wp: list[tuple[float, float]] = []
         self._pose_ready = False
         self._rx = self._ry = self._rth = 0.0
 
-        # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(
             LaserScan, scan_topic, self._scan_cb, _RELIABLE)
         self.create_subscription(
@@ -128,10 +97,6 @@ class DWANode(Node):
             f'samples={self._n_v}×{self._n_w}={self._n_v*self._n_w} | '
             f'scan={scan_topic}')
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Callbacks
-    # ══════════════════════════════════════════════════════════════════════
-
     def _scan_cb(self, msg: LaserScan):
         """Convierte el LaserScan a puntos (x,y) en el frame del robot."""
         n      = len(msg.ranges)
@@ -144,7 +109,6 @@ class DWANode(Node):
         r = ranges[valid].astype(np.float64)
         a = angles[valid]
 
-        # Puntos en frame robot (laser en base_footprint con offset pequeño)
         self._scan_xy = np.column_stack([r * np.cos(a), r * np.sin(a)])
 
     def _ref_cb(self, msg: Twist):
@@ -162,10 +126,6 @@ class DWANode(Node):
         self._rth = quat_to_yaw(msg.pose.pose.orientation)
         if not self._pose_ready:
             self._pose_ready = True
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Bucle de control DWA
-    # ══════════════════════════════════════════════════════════════════════
 
     def _loop(self):
         # Sin datos suficientes → parar (seguro por defecto)
@@ -206,11 +166,7 @@ class DWANode(Node):
             self._pub.publish(t)
             return
 
-        # ── 1. Ventana de muestreo ────────────────────────────────────────
-        # Usamos el rango completo [0, v_max] × [-ω_max, ω_max].
-        # La aceleración real la maneja el microcontrolador del PuzzleBot;
-        # el DWA solo necesita encontrar una dirección segura.
-        # Centrar las muestras angulares alrededor de la referencia para
+        # Centrar muestras angulares alrededor de la referencia para
         # que el DWA prefiera naturalmente la trayectoria del path_follower.
         w_center = float(np.clip(self._ref_w, -self._w_max, self._w_max))
         w_half   = self._w_max
@@ -218,14 +174,8 @@ class DWANode(Node):
         w_arr = np.linspace(w_center - w_half, w_center + w_half, self._n_w)
         w_arr = np.clip(w_arr, -self._w_max, self._w_max)
 
-        # ── 2. Freno de proximidad ────────────────────────────────────────
-        # Reduce la velocidad lineal de referencia cuando hay un obstáculo
-        # en el cono frontal, ANTES de calcular trayectorias.
-        # Evita que el robot llegue a alta velocidad cerca del obstáculo
-        # y oscile mientras el DWA busca alternativas.
         ref_v_braked = self._proximity_brake(self._ref_v, self._scan_xy)
 
-        # ── 3. Bypass rápido: si la trayectoria de referencia es segura, usarla ──
         ref_traj, _ = self._simulate(ref_v_braked, self._ref_w)
         if self._clearance(ref_traj, self._scan_xy) >= self._r_robot:
             self._curr_v = ref_v_braked
@@ -236,10 +186,8 @@ class DWANode(Node):
             self._pub.publish(t)
             return
 
-        # ── 3. Goal heading en frame robot (solo si el bypass falló) ──────
         goal_heading_local = self._goal_heading_local()
 
-        # ── 4. Evaluar cada (v, ω) ────────────────────────────────────────
         best_score = -np.inf
         best_v, best_w = 0.0, 0.0
         found_safe   = False
@@ -248,23 +196,14 @@ class DWANode(Node):
 
         for v in v_arr:
             for w in w_arr:
-                # Simular trayectoria en frame robot
-                traj_xy, final_th = self._simulate(v, w)  # (n_steps, 2), float
-
-                # Clearance: distancia mínima a cualquier punto del scan
+                traj_xy, final_th = self._simulate(v, w)
                 min_dist = self._clearance(traj_xy, scan)
 
                 if min_dist < self._r_robot:
-                    continue   # colisión: descartar
+                    continue
 
-                # Puntuación
-                # heading: cuánto se parece el rumbo final al goal heading
                 h_score = 1.0 - abs(wrap_angle(goal_heading_local - final_th)) / math.pi
-
-                # clearance: normalizada a [0,1]
                 d_score = min(1.0, min_dist / (self._v_max * self._sim_t))
-
-                # velocity: preferir velocidad lineal cercana a la referencia
                 v_score = 1.0 - abs(v - self._ref_v) / max(self._v_max, 1e-3)
 
                 score = self._wh * h_score + self._wd * d_score + self._wv * v_score
@@ -274,7 +213,6 @@ class DWANode(Node):
                     best_v, best_w = v, w
                     found_safe = True
 
-        # ── 4. Publicar resultado ─────────────────────────────────────────
         if not found_safe:
             best_v, best_w = self._recovery(scan)
 
@@ -285,10 +223,6 @@ class DWANode(Node):
         t.linear.x  = float(best_v)
         t.angular.z = float(best_w)
         self._pub.publish(t)
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Helpers DWA
-    # ══════════════════════════════════════════════════════════════════════
 
     def _simulate(self, v: float, w: float):
         """
@@ -350,10 +284,6 @@ class DWANode(Node):
         heading_map   = math.atan2(wy - self._ry, wx - self._rx)
         return wrap_angle(heading_map - self._rth)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Freno de proximidad frontal
-    # ══════════════════════════════════════════════════════════════════════
-
     def _proximity_brake(self, ref_v: float, scan_xy: np.ndarray) -> float:
         """
         Reduce la velocidad lineal proporcionalmente a la cercanía del
@@ -373,8 +303,7 @@ class DWANode(Node):
         x_pts = scan_xy[:, 0]
         y_pts = scan_xy[:, 1]
 
-        # Cono frontal ampliado: ±60° — cubre obstáculos de costado
-        # antes eran ±30° y los cilindros a 40-50° no se detectaban
+        # ±60° en lugar de ±30° — los cilindros a 40-50° no se detectaban con el cono estrecho
         angles    = np.arctan2(y_pts, x_pts)
         en_frente = (x_pts > 0) & (np.abs(angles) < math.radians(60))
 
@@ -386,18 +315,13 @@ class DWANode(Node):
         brake_dist = 0.60   # empieza a frenar a 60cm del obstáculo
 
         if min_fwd >= brake_dist:
-            return ref_v                          # camino libre: velocidad completa
+            return ref_v
         if min_fwd <= self._r_robot:
-            return 0.0                            # obstáculo pegado: parar
+            return 0.0
 
-        # Interpolación lineal: de 1.0 (en brake_dist) a 0.0 (en robot_radius)
         factor = (min_fwd - self._r_robot) / (brake_dist - self._r_robot)
         braked = ref_v * max(0.0, min(1.0, factor))
         return braked
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Recuperación inteligente basada en espacio disponible
-    # ══════════════════════════════════════════════════════════════════════
 
     def _recovery(self, scan_xy: np.ndarray) -> tuple[float, float]:
         """
@@ -430,9 +354,7 @@ class DWANode(Node):
                 return float('inf')
             return float(np.min(np.linalg.norm(pts, axis=1)))
 
-        # Para izquierda/derecha solo considerar puntos del FRENTE (x > 0).
-        # Los puntos de paredes detrás del robot no son relevantes para
-        # decidir hacia dónde girar para salir de un obstáculo adelante.
+        # Solo puntos del FRENTE para decidir dirección de giro
         frente = x_pts > 0.0
 
         c_izq   = sector_clearance(frente & (y_pts >  0.05))   # frente-izquierda
@@ -449,21 +371,18 @@ class DWANode(Node):
         w_rec = self._w_max * 0.5   # velocidad de giro de recuperación
 
         if izq_libre and c_izq >= c_der:
-            # Más espacio a la izquierda → rotar izquierda
             self.get_logger().info(
                 f'Recuperación: giro izq | c_izq={c_izq:.2f} c_der={c_der:.2f}',
                 throttle_duration_sec=1.0)
             return 0.0, w_rec
 
         if der_libre and c_der > c_izq:
-            # Más espacio a la derecha → rotar derecha
             self.get_logger().info(
                 f'Recuperación: giro der | c_izq={c_izq:.2f} c_der={c_der:.2f}',
                 throttle_duration_sec=1.0)
             return 0.0, -w_rec
 
         if atras_libre:
-            # Ambos lados bloqueados pero hay espacio atrás → reversa lenta
             self.get_logger().info(
                 f'Recuperación: reversa | c_atras={c_atras:.2f}',
                 throttle_duration_sec=1.0)
@@ -478,7 +397,6 @@ class DWANode(Node):
         self._pub.publish(Twist())
 
 
-# ══════════════════════════════════════════════════════════════════════════
 def main(args=None):
     rclpy.init(args=args)
     node = DWANode()

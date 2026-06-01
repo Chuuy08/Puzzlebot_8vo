@@ -1,29 +1,6 @@
 #!/usr/bin/env python3
-"""
-costmap_node.py — Capa estática + capa dinámica (LiDAR).
-
-Arquitectura completa (este nodo es el primero):
-  /map + /scan  →  costmap_node  →  /costmap  →  rrt_node  →  path_follower  →  dwa_node
-
-Suscribe:
-  /map          nav_msgs/OccupancyGrid        capa estática (una vez al arranque)
-  /scan         sensor_msgs/LaserScan         capa dinámica (cada scan)
-  /mcl_pose     geometry_msgs/PoseWithCovarianceStamped   pose del robot en frame map
-
-Publica:
-  /costmap      nav_msgs/OccupancyGrid
-
-Codificación del costmap de salida:
-  100  → pared original (mapa estático)
-   99  → zona inflada estática (margen de seguridad)
-  100  → obstáculo dinámico detectado por LiDAR (sobreescribe 99 o 0)
-    0  → espacio libre navegable
-   -1  → desconocido
-
-Parámetros clave:
-  scan_topic          '/scan'   (simulación) o '/scan_fixed' (robot real)
-  laser_angle_offset   0.0      (sim) o 3.14159 (real, cable RPLidar hacia atrás)
-"""
+# /map + /scan + /mcl_pose → costmap_node → /costmap
+# Costmap: 0=libre, 99=inflado, 100=obstáculo, -1=desconocido
 
 import math
 import numpy as np
@@ -58,7 +35,6 @@ class CostmapNode(Node):
     def __init__(self):
         super().__init__('costmap_node')
 
-        # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('inflation_radius',         0.18)   # radio inflado estático [m]
         self.declare_parameter('dynamic_inflation_radius', 0.18)   # radio inflado dinámico [m]
         self.declare_parameter('publish_rate',             5.0)    # Hz
@@ -83,11 +59,8 @@ class CostmapNode(Node):
         self._rmax         = self.get_parameter('laser_max_range').value
         self._rmin         = self.get_parameter('laser_min_range').value
 
-        # ── Estado interno ────────────────────────────────────────────────
-        # Capa estática (se calcula una vez cuando llega /map)
         self._static_costmap: np.ndarray | None = None
 
-        # Metadata del mapa (necesaria para convertir coordenadas mundo ↔ celda)
         self._map_W   = 0
         self._map_H   = 0
         self._map_res = 0.05
@@ -97,19 +70,15 @@ class CostmapNode(Node):
         self._map_sin = 0.0    # sin(yaw_mapa)
         self._map_info = None  # MapMetaData completo para el mensaje de salida
 
-        # Capa dinámica: se limpia y recalcula en cada scan
         self._dynamic_grid: np.ndarray | None = None
 
-        # Pose del robot en frame map (actualizada desde /mcl_pose)
         self._robot_x   = 0.0
         self._robot_y   = 0.0
         self._robot_yaw = 0.0
         self._pose_ready = False   # True una vez que llegó la primera pose
 
-        # Mensaje de salida actual (lo republica el timer)
         self._costmap_msg: OccupancyGrid | None = None
 
-        # ── Suscripciones ─────────────────────────────────────────────────
         self._map_sub = self.create_subscription(
             OccupancyGrid, '/map', self._map_cb, _LATCHED_QOS)
 
@@ -119,10 +88,8 @@ class CostmapNode(Node):
         self._pose_sub = self.create_subscription(
             PoseWithCovarianceStamped, '/mcl_pose', self._pose_cb, _RELIABLE_QOS)
 
-        # ── Publicador ────────────────────────────────────────────────────
         self._pub = self.create_publisher(OccupancyGrid, '/costmap', _LATCHED_QOS)
 
-        # Timer: republica el último costmap disponible
         self.create_timer(1.0 / pub_rate, self._timer_cb)
 
         self.get_logger().info(
@@ -131,16 +98,11 @@ class CostmapNode(Node):
             f'| laser_offset={math.degrees(self._laser_offset):.1f}° '
             f'| rate={pub_rate} Hz | esperando /map y /mcl_pose ...')
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Callback: mapa estático (se ejecuta UNA sola vez al arranque)
-    # ══════════════════════════════════════════════════════════════════════
-
     def _map_cb(self, msg: OccupancyGrid):
         W   = msg.info.width
         H   = msg.info.height
         res = msg.info.resolution
 
-        # Guardar metadata del mapa para conversión de coordenadas
         self._map_W   = W
         self._map_H   = H
         self._map_res = res
@@ -148,21 +110,13 @@ class CostmapNode(Node):
         self._map_oy  = msg.info.origin.position.y
         self._map_info = msg.info
 
-        # Extraer yaw de la orientación del mapa (cuaternión → yaw)
         map_yaw       = quat_to_yaw(msg.info.origin.orientation)
         self._map_cos = math.cos(map_yaw)
         self._map_sin = math.sin(map_yaw)
 
-        # Array 2D: filas × columnas, dtype int8
         raw = np.array(msg.data, dtype=np.int8).reshape(H, W)
-
-        # Calcular la capa estática inflada (solo se hace una vez)
         self._static_costmap = self._inflate(raw, res, self._r_inf)
-
-        # Inicializar la capa dinámica vacía con el mismo tamaño
         self._dynamic_grid = np.zeros((H, W), dtype=np.int8)
-
-        # Publicar el costmap estático inmediatamente (sin capa dinámica aún)
         self._publish_combined()
 
         n_par = int(np.sum(raw                 == 100))
@@ -171,10 +125,6 @@ class CostmapNode(Node):
         self.get_logger().info(
             f'Mapa cargado: {W}×{H} @ {res} m/px | '
             f'paredes={n_par} infladas={n_inf} libres={n_lib}')
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Callback: pose del robot desde MCL (frame map)
-    # ══════════════════════════════════════════════════════════════════════
 
     def _pose_cb(self, msg: PoseWithCovarianceStamped):
         self._robot_x   = msg.pose.pose.position.x
@@ -188,12 +138,7 @@ class CostmapNode(Node):
                 f'({self._robot_x:.2f}, {self._robot_y:.2f}) '
                 f'yaw={math.degrees(self._robot_yaw):.1f}° — capa dinámica activa')
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Callback: scan del LiDAR → capa dinámica
-    # ══════════════════════════════════════════════════════════════════════
-
     def _scan_cb(self, msg: LaserScan):
-        # Esperar a que el mapa estático y la pose estén disponibles
         if self._static_costmap is None:
             return
         if not self._pose_ready:
@@ -203,15 +148,11 @@ class CostmapNode(Node):
                 throttle_duration_sec=5.0)
             return
 
-        # ── Proyección vectorizada de beams del LiDAR al frame map ───────
-
         n      = len(msg.ranges)
         ranges = np.array(msg.ranges, dtype=np.float64)
 
-        # Ángulos de cada beam en el frame del sensor
         angles_local = msg.angle_min + np.arange(n) * msg.angle_increment
 
-        # Filtrar beams válidos (dentro del rango operativo del sensor)
         valido = (
             np.isfinite(ranges) &
             (ranges >= self._rmin) &
@@ -234,14 +175,11 @@ class CostmapNode(Node):
         # laser_angle_offset corrige la orientación física del sensor
         beam_angles = self._robot_yaw + a + self._laser_offset
 
-        # Coordenadas mundo del punto de impacto de cada beam
         hit_x = laser_x + r * np.cos(beam_angles)
         hit_y = laser_y + r * np.sin(beam_angles)
 
-        # Convertir a coordenadas de celda del mapa (vectorizado)
         cols, rows = self._world_to_cell_v(hit_x, hit_y)
 
-        # Filtrar celdas dentro de los límites del mapa
         in_bounds = (
             (cols >= 0) & (cols < self._map_W) &
             (rows >= 0) & (rows < self._map_H)
@@ -249,39 +187,28 @@ class CostmapNode(Node):
         cols = cols[in_bounds]
         rows = rows[in_bounds]
 
-        # ── Actualizar la capa dinámica ───────────────────────────────────
         # Se limpia en cada scan para eliminar obstáculos que ya no están.
         self._dynamic_grid[:] = 0
 
-        # Inflar solo alrededor de los hits actuales (no el grid entero).
-        # Mucho más rápido: N_hits × N_offsets vs H×W × N_offsets.
         if self._dyn_r_inf > 0 and len(rows) > 0:
             self._inflate_hits(rows, cols)
         else:
             self._dynamic_grid[rows, cols] = 100
 
-        # ── Combinar capas y publicar ─────────────────────────────────────
         self._publish_combined()
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Combinar capa estática + dinámica y publicar /costmap
-    # ══════════════════════════════════════════════════════════════════════
 
     def _publish_combined(self):
         if self._static_costmap is None or self._map_info is None:
             return
 
-        # Partir de la capa estática inflada
         combined = self._static_costmap.copy()
 
-        # Superponer capa dinámica sobre la estática
         if self._dynamic_grid is not None:
             # Zona inflada dinámica (99) solo ocupa celdas libres
             combined[(self._dynamic_grid == 99) & (combined == 0)] = 99
             # Obstáculo dinámico exacto (100) sobreescribe todo
             combined[self._dynamic_grid == 100] = 100
 
-        # Empaquetar mensaje
         out = OccupancyGrid()
         out.header.stamp    = self.get_clock().now().to_msg()
         out.header.frame_id = 'map'
@@ -290,10 +217,6 @@ class CostmapNode(Node):
 
         self._costmap_msg = out
         self._pub.publish(out)
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Inflado rápido: solo alrededor de los hits del LiDAR
-    # ══════════════════════════════════════════════════════════════════════
 
     def _inflate_hits(self, hit_rows: np.ndarray, hit_cols: np.ndarray):
         """
@@ -331,10 +254,6 @@ class CostmapNode(Node):
         # Marcar zona inflada (99), luego sobrescribir hits exactos con 100
         self._dynamic_grid[all_rows, all_cols] = 99
         self._dynamic_grid[hit_rows, hit_cols] = 100
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Inflado de obstáculos — solo numpy, sin scipy
-    # ══════════════════════════════════════════════════════════════════════
 
     def _inflate(self, grid: np.ndarray, resolution: float,
                  radius: float) -> np.ndarray:
@@ -374,10 +293,6 @@ class CostmapNode(Node):
 
         return costmap
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Conversión de coordenadas mundo → celda del mapa (vectorizada)
-    # ══════════════════════════════════════════════════════════════════════
-
     def _world_to_cell_v(self, xs: np.ndarray,
                           ys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -396,10 +311,6 @@ class CostmapNode(Node):
         rows = (-dx * self._map_sin + dy * self._map_cos) / self._map_res
         return cols.astype(int), rows.astype(int)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Timer: republica el costmap actual
-    # ══════════════════════════════════════════════════════════════════════
-
     def _timer_cb(self):
         if self._costmap_msg is None:
             return
@@ -407,7 +318,6 @@ class CostmapNode(Node):
         self._pub.publish(self._costmap_msg)
 
 
-# ══════════════════════════════════════════════════════════════════════════
 def main(args=None):
     rclpy.init(args=args)
     node = CostmapNode()

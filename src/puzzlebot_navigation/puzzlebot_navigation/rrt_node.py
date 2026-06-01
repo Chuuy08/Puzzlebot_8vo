@@ -1,31 +1,6 @@
 #!/usr/bin/env python3
-"""
-rrt_node.py — Paso 3: Planificador global con RRT bidireccional.
-
-Arquitectura:
-  /costmap + /goal_pose → rrt_node → /global_path → path_follower → dwa_node
-
-Suscribe:
-  /costmap    nav_msgs/OccupancyGrid           mapa con obstáculos inflados
-  /mcl_pose   geometry_msgs/PoseWithCovarianceStamped  pose del robot en frame map
-  /goal_pose  geometry_msgs/PoseStamped        goal publicado desde RViz o terminal
-
-Publica:
-  /global_path  nav_msgs/Path                  trayectoria libre de obstáculos
-
-Algoritmo — RRT Bidireccional (BiRRT):
-  Crece dos árboles: árbol A desde el robot, árbol B desde el goal.
-  En cada iteración extiende un árbol hacia un punto aleatorio e intenta
-  conectar el nuevo nodo con el árbol opuesto. Cuando la conexión es posible,
-  extrae el path completo y lo suaviza.
-  Converge ~4× más rápido que RRT estándar en mapas con pasillos.
-
-Interpretación del costmap:
-   0   → libre (navegable)
-  99   → zona inflada (bloqueada para el robot)
-  100  → obstáculo (pared o dinámico)
-  -1   → desconocido (bloqueado por seguridad)
-"""
+# /costmap + /goal_pose → rrt_node (BiRRT) → /global_path
+# Costmap: 0=libre, 99=inflado, 100=obstáculo, -1=desconocido
 
 import math
 import random
@@ -57,7 +32,6 @@ class RRTNode(Node):
     def __init__(self):
         super().__init__('rrt_node')
 
-        # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('step_size',       0.20)   # tamaño de paso [m]
         self.declare_parameter('max_iterations',  6000)   # iteraciones máximas
         self.declare_parameter('goal_bias',       0.15)   # prob. de samplear la raíz opuesta
@@ -68,7 +42,6 @@ class RRTNode(Node):
         self._p_goal = self.get_parameter('goal_bias').value
         self._smooth = self.get_parameter('smooth_path').value
 
-        # ── Estado interno ────────────────────────────────────────────────
         self._grid: np.ndarray | None = None   # snapshot del costmap
         self._map_W   = 0
         self._map_H   = 0
@@ -84,7 +57,6 @@ class RRTNode(Node):
         self._planning   = False       # evitar doble planeación simultánea
         self._grid_lock  = threading.Lock()
 
-        # ── ROS I/O ───────────────────────────────────────────────────────
         self._costmap_sub = self.create_subscription(
             OccupancyGrid, '/costmap', self._costmap_cb, _LATCHED)
         self._pose_sub = self.create_subscription(
@@ -97,10 +69,6 @@ class RRTNode(Node):
             f'rrt_node listo | step={self._step} m | '
             f'max_iter={self._max_it} | goal_bias={self._p_goal} | '
             f'smooth={self._smooth} | esperando /costmap y /mcl_pose ...')
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Callbacks de entrada
-    # ══════════════════════════════════════════════════════════════════════
 
     def _costmap_cb(self, msg: OccupancyGrid):
         with self._grid_lock:
@@ -125,7 +93,6 @@ class RRTNode(Node):
                 f'— listo para planificar')
 
     def _goal_cb(self, msg: PoseStamped):
-        # Guardar antes de verificar precondiciones
         if not self._pose_ready:
             self.get_logger().warn(
                 'Sin pose del robot. Usa "2D Pose Estimate" en RViz primero.')
@@ -155,10 +122,6 @@ class RRTNode(Node):
             target=self._plan_thread, args=(start, goal), daemon=True
         ).start()
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Hilo de planeación
-    # ══════════════════════════════════════════════════════════════════════
-
     def _plan_thread(self, start: tuple, goal: tuple):
         try:
             # Snapshot del costmap para que los cambios durante la planeación
@@ -169,7 +132,6 @@ class RRTNode(Node):
             start_a = np.array(start, dtype=np.float64)
             goal_a  = np.array(goal,  dtype=np.float64)
 
-            # Validar que inicio y goal estén en espacio libre
             if not self._pt_free(start_a, grid):
                 self.get_logger().error(
                     f'El inicio ({start[0]:.2f},{start[1]:.2f}) está en un '
@@ -181,7 +143,6 @@ class RRTNode(Node):
                     f'obstáculo. Elige un punto en espacio libre (blanco en RViz).')
                 return
 
-            # Planificar
             path = self._birrt(start_a, goal_a, grid)
 
             if path is None:
@@ -190,7 +151,6 @@ class RRTNode(Node):
                     f'Intenta un goal más cercano o revisa que haya espacio libre.')
                 return
 
-            # Suavizar
             if self._smooth:
                 path = self._smooth_path(path, grid)
 
@@ -198,10 +158,6 @@ class RRTNode(Node):
 
         finally:
             self._planning = False
-
-    # ══════════════════════════════════════════════════════════════════════
-    # BiRRT
-    # ══════════════════════════════════════════════════════════════════════
 
     def _birrt(self, start: np.ndarray, goal: np.ndarray,
                grid: np.ndarray):
@@ -223,9 +179,7 @@ class RRTNode(Node):
         a_es_start = True   # para saber cómo ordenar el path al final
 
         for it in range(self._max_it):
-            # ── 1. Muestra aleatoria ──────────────────────────────────────
             # Con probabilidad goal_bias se samplea la raíz del árbol opuesto
-            # (= forzar progreso hacia el objetivo)
             if random.random() < self._p_goal:
                 q_rand = nodes_b[0].copy()
             else:
@@ -233,13 +187,11 @@ class RRTNode(Node):
                 if q_rand is None:
                     continue
 
-            # ── 2. Extender árbol A ───────────────────────────────────────
             na      = np.array(nodes_a)
             near_i  = int(np.argmin(np.linalg.norm(na - q_rand, axis=1)))
             q_near  = nodes_a[near_i]
             q_new   = self._steer(q_near, q_rand)
 
-            # Verificar que q_new y el segmento q_near→q_new son libres
             if not (self._pt_free(q_new, grid) and
                     self._seg_free(q_near, q_new, grid)):
                 # Intercambiar y continuar
@@ -252,7 +204,6 @@ class RRTNode(Node):
             par_a.append(near_i)
             new_i = len(nodes_a) - 1
 
-            # ── 3. Intentar conectar árbol B a q_new ─────────────────────
             nb       = np.array(nodes_b)
             near_bi  = int(np.argmin(np.linalg.norm(nb - q_new, axis=1)))
             q_near_b = nodes_b[near_bi]
@@ -276,16 +227,11 @@ class RRTNode(Node):
                     f'waypoints={len(full)}')
                 return full
 
-            # ── 4. Intercambiar árboles ───────────────────────────────────
             nodes_a, nodes_b = nodes_b, nodes_a
             par_a,   par_b   = par_b,   par_a
             a_es_start       = not a_es_start
 
         return None
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Helpers de planeación
-    # ══════════════════════════════════════════════════════════════════════
 
     def _steer(self, from_pt: np.ndarray, to_pt: np.ndarray) -> np.ndarray:
         """Avanza desde from_pt hacia to_pt un máximo de step_size metros."""
@@ -364,10 +310,6 @@ class RRTNode(Node):
             f'({100*(1-len(smooth)/len(path)):.0f}% reducción)')
         return smooth
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Conversión de coordenadas mundo ↔ celda del mapa
-    # ══════════════════════════════════════════════════════════════════════
-
     def _w2c(self, x: float, y: float) -> tuple[int, int]:
         """Coordenadas mundo (x,y) → índices de celda (row, col)."""
         dx  = x - self._map_ox
@@ -383,10 +325,6 @@ class RRTNode(Node):
         y = self._map_oy + col * self._map_res * self._map_sin \
                          + row * self._map_res * self._map_cos
         return x, y
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Publicar path
-    # ══════════════════════════════════════════════════════════════════════
 
     def _publish_path(self, path: list):
         msg = Path()
@@ -404,7 +342,6 @@ class RRTNode(Node):
         self._path_pub.publish(msg)
 
 
-# ══════════════════════════════════════════════════════════════════════════
 def main(args=None):
     rclpy.init(args=args)
     node = RRTNode()

@@ -1,14 +1,11 @@
-#IMPORTS REQUIRED TO SET THE PACKAGE ADDRESS (DIRECTORIES)
 import os
 from ament_index_python.packages import get_package_share_directory
 
-#IMPORTS REQUIRED FOR Launching Nodes
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-#IMPORTS REQUIRED FOR EVENTS AND ACTIONS
-from launch.actions import  EmitEvent, LogInfo, RegisterEventHandler
+from launch.actions import EmitEvent, LogInfo, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import EnvironmentVariable, Command
@@ -16,8 +13,6 @@ from launch.substitutions import EnvironmentVariable, Command
 
 def generate_launch_description():
  
-    #urdf_file_name = 'puzzlebot_hacker_ed.xacro'
-    #urdf_file_name = 'puzzlebot_jetson_ed.xacro'
     urdf_file_name = 'puzzlebot_jetson_lidar_ed.xacro'
     urdf_default_path = os.path.join(
                         get_package_share_directory('puzzlebot_description'),
@@ -35,7 +30,6 @@ def generate_launch_description():
                             )
     
 
-    # Define joint_state_publisher node (for simulation)
     joint_state_publisher_node = Node(
                                 package='joint_state_publisher_gui',
                                 executable='joint_state_publisher_gui',
