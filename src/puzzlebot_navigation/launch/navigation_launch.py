@@ -28,11 +28,11 @@ def generate_launch_description():
         description='0.0 (sim) o 3.14159 (robot real, cable RPLidar atrás)')
 
     inflation_radius_arg = DeclareLaunchArgument(
-        'inflation_radius', default_value='0.18',
+        'inflation_radius', default_value='0.25',
         description='Radio de inflado estático del costmap [m]')
 
     robot_radius_arg = DeclareLaunchArgument(
-        'robot_radius', default_value='0.13',
+        'robot_radius', default_value='0.18',
         description='Radio del robot en DWA — debe ser < inflation_radius')
 
     # ── Variables de configuración ────────────────────────────────────────

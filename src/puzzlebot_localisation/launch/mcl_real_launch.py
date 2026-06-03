@@ -41,7 +41,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='laser_frame_bridge',
-        arguments=['0', '0', '0', '0', '0', '0', 'laser_frame', 'laser'],
+        arguments=['0', '0', '0', '3.14159', '0', '0', 'laser_frame', 'laser'],
     )
 
     # ── 2. Dead-reckoning odometry ────────────────────────────────────────
