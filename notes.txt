@@ -25,6 +25,68 @@ ros2 launch puzzlebot_control puzzlebot_launch.py
 6. Control de dos robots reales simultáneos:
 ros2 launch puzzlebot_control multi_puzzlebot_launch.py
 
+7. Lanzar camera
+ros2 launch ros_deep_learning video_source.ros2.launch \
+  input_width:=320 input_height:=180
+
+
+
+8. Dashboard web puzzlebot_gui (3 terminales)
+
+  Terminal 1 — Simulador (localización + navegación):
+  ros2 launch puzzlebot_localisation mcl_launch.py
+  ros2 launch puzzlebot_navigation navigation_launch.py
+
+  Terminal 2 — Servidor web + Bridge ROS-gRPC:
+  source ~/robotics_ws/install/setup.bash
+  cd ~/robotics_ws/install/puzzlebot_gui/share/puzzlebot_gui/web
+  python3 -m http.server 8080 &
+  ros2 run puzzlebot_gui gui_bridge
+
+  Terminal 3 — Proxy gRPC-Web:
+  cd ~/robotics_ws/install/puzzlebot_gui/share/puzzlebot_gui
+  ./grpcwebproxy --backend_addr=localhost:50051 --run_tls_server=false --allow_all_origins --server_http_debug_port=8443
+
+  Abrir en navegador: http://localhost:8080
+
+  Para robot real cambiar mcl_launch.py -> mcl_real_launch.py
+                      y navigation_launch.py -> navigation_real_launch.py
+
+  Nota: la ruta en el mapa aparece al enviar el primer waypoint desde la pagina.
+
+
 
 
 Si en algun momento desea conectar mis nodos de control y localización a Gazebo en lugar del robot real
+
+
+Exportar .engine en jetson nano para mejor inferenrcia con tensoRT
+  "
+  from ultralytics import YOLO
+  model = YOLO('yoloN_best.onnx')
+  model.export(format='engine', half=True, device=0)
+
+  "
+
+con esto se genera un modelo especificamente optimizado para la jetson nano. 
+
+requerimeintos para generar .engine : 
+# JetPack
+  cat /etc/nv_tegra_release
+
+  # CUDA
+  nvcc --version
+
+  # cuDNN
+  dpkg -l | grep cudnn
+
+  # TensorRT
+  dpkg -l | grep tensorrt
+  python3 -c "import tensorrt; print(tensorrt.__version__)"
+
+  # PyTorch
+  python3 -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available())"
+
+  # Ultralytics
+  python3 -c "import ultralytics; print(ultralytics.__version__)"
+  
