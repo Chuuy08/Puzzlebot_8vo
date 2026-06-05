@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PuzzleBot Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/protobufjs@7.2.5/dist/protobuf.min.js"></script>
+  <script src="grpc_client.js"></script>
+</head>
+<body>
+
+<!-- ── Topbar ─────────────────────────────────────────────────────────── -->
+<div id="topbar">
+  <h1>Puzzle<span>Bot</span> Dashboard</h1>
+
+  <div class="status-dots">
+    <div class="dot-item"><div class="dot" id="dot-grpc"></div><span>gRPC</span></div>
+    <div class="dot-item"><div class="dot" id="dot-odom"></div><span>Odometría</span></div>
+    <div class="dot-item"><div class="dot" id="dot-map"></div><span>Mapa</span></div>
+    <div class="dot-item"><div class="dot" id="dot-cam"></div><span>Cámara</span></div>
+  </div>
+
+  <span id="latency-label">— ms</span>
+  <button class="btn-icon" id="btn-theme" title="Alternar tema">🌙</button>
+</div>
+
+<!-- ── Layout ─────────────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- COLUMNA IZQUIERDA: telemetría + nodos -->
+  <div id="col-left">
+
+    <div class="panel">
+      <div class="panel-title">Telemetría</div>
+      <div class="telem-grid">
+        <div class="telem-cell"><div class="label">Pos X (m)</div><div class="value" id="t-x">—</div></div>
+        <div class="telem-cell"><div class="label">Pos Y (m)</div><div class="value" id="t-y">—</div></div>
+        <div class="telem-cell"><div class="label">Yaw (°)</div>  <div class="value" id="t-yaw">—</div></div>
+        <div class="telem-cell"><div class="label">Vel Lin (m/s)</div><div class="value" id="t-vl">—</div></div>
+        <div class="telem-cell" style="grid-column:span 2">
+          <div class="label">Vel Ang (rad/s)</div><div class="value" id="t-va">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="flex:1; overflow:hidden">
+      <div class="panel-title">Estado de Nodos</div>
+      <div id="node-list"></div>
+    </div>
+
+  </div>
+
+  <!-- COLUMNA CENTRAL: mapa -->
+  <div id="col-center">
+    <div class="panel" style="flex:1">
+      <div class="panel-title">
+        Mapa
+        <span style="font-weight:400; font-size:10px; margin-left:8px; color:var(--text-2)">
+          <span style="color:#f0f0f0">■</span> libre &nbsp;
+          <span style="color:#333">■</span> obstáculo &nbsp;
+          <span style="color:rgba(30,30,60,.7)">■</span> costo &nbsp;
+          <span style="color:var(--green)">▲</span> robot &nbsp;
+          <span style="color:var(--blue)">──</span> ruta &nbsp;
+          <span style="color:var(--red); opacity:.7">·</span> partículas
+        </span>
+      </div>
+      <div id="map-wrap">
+        <!-- Capa 1: mapa estático /map — fondo, rara vez se redibuja -->
+        <canvas id="canvas-map"></canvas>
+        <!-- Capa 2: costmap dinámico — overlay semitransparente -->
+        <canvas id="canvas-costmap"></canvas>
+        <!-- Capa 3: robot, ruta, partículas, waypoints — siempre encima -->
+        <canvas id="canvas-overlay"></canvas>
+      </div>
+      <div style="font-size:10px; color:var(--text-2); text-align:center">
+        Clic en el mapa para agregar waypoints
+      </div>
+    </div>
+  </div>
+
+  <!-- COLUMNA DERECHA: cámara + waypoints -->
+  <div id="col-right">
+
+    <div class="panel">
+      <div class="panel-title">Cámara</div>
+      <div id="cam-wrap">
+        <img id="cam-img" alt="">
+        <canvas id="cam-overlay"></canvas>
+        <div id="cam-placeholder">Sin señal de cámara</div>
+      </div>
+    </div>
+
+    <div class="panel" style="flex:1; overflow:hidden">
+      <div class="panel-title">
+        Waypoints
+        <span id="wp-hint" style="font-weight:400; font-size:10px; color:var(--text-2); margin-left:6px">
+          clic en el mapa para agregar
+        </span>
+      </div>
+      <div id="wp-list"></div>
+      <div id="wp-actions">
+        <button class="btn btn-default" id="btn-clear-wp">Limpiar</button>
+        <button class="btn btn-primary"  id="btn-send-wp" style="flex:1">▶ Enviar</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── Configuración ────────────────────────────────────────────────────────────
+const PROXY_HOST = window.location.hostname || 'localhost';
+const PROXY_URL  = `http://${PROXY_HOST}:8443`;
+
+// ─── Estado global ────────────────────────────────────────────────────────────
+let cliente       = null;
+let mapMeta       = null;   // {width, height, resolution, origin_x, origin_y, origin_yaw}
+let robotPose     = { x: 0, y: 0, yaw: 0 };
+let rutaPoses     = [];
+let particlePoses = [];
+let waypoints     = [];     // [{x, y, yaw:0, label}]
+let t0Telem       = performance.now();
+
+// Timestamps de último dato recibido por stream (para detectar staleness)
+const lastSeen = { telemetry: 0, map: 0, camera: 0 };
+
+// Revisión periódica: si no llega dato en 3s → dot rojo
+setInterval(() => {
+  const now = Date.now();
+  if (lastSeen.telemetry > 0 && now - lastSeen.telemetry > 3000) setDot('dot-odom', 'err');
+  if (lastSeen.map      > 0 && now - lastSeen.map      > 5000) setDot('dot-map',  'err');
+  if (lastSeen.camera   > 0 && now - lastSeen.camera   > 5000) setDot('dot-cam',  'err');
+}, 1000);
+
+// Dimensiones de canvas (se sincronizan con el contenedor al cargar)
+const W = 480, H = 360;
+['canvas-map', 'canvas-costmap', 'canvas-overlay'].forEach(id => {
+  const c = document.getElementById(id);
+  c.width = W; c.height = H;
+});
+
+// ─── Inicialización ───────────────────────────────────────────────────────────
+async function init() {
+  try {
+    cliente = new PuzzlebotClient(PROXY_URL);
+    await cliente.init();
+    setDot('dot-grpc', 'ok');
+
+    cliente.streamTelemetry(onTelemetry);
+    cliente.streamCostmap(onCostmap);
+    cliente.streamPath(onPath);
+    cliente.streamNodeStatus(onNodeStatus);
+    cliente.streamCamera(onCamera);
+  } catch (e) {
+    setDot('dot-grpc', 'err');
+    console.error('[dashboard] Error al conectar:', e);
+  }
+}
+
+// ─── Callbacks de datos ───────────────────────────────────────────────────────
+
+function onTelemetry(msg) {
+  const now = performance.now();
+  document.getElementById('latency-label').textContent = `${(now - t0Telem).toFixed(0)} ms`;
+  t0Telem = now;
+
+  document.getElementById('t-x').textContent   = (+msg.posX   || 0).toFixed(3);
+  document.getElementById('t-y').textContent   = (+msg.posY   || 0).toFixed(3);
+  document.getElementById('t-yaw').textContent = ((+msg.yaw   || 0) * 180 / Math.PI).toFixed(1);
+  document.getElementById('t-vl').textContent  = (+msg.velLinear  || 0).toFixed(3);
+  document.getElementById('t-va').textContent  = (+msg.velAngular || 0).toFixed(3);
+
+  robotPose = { x: +msg.posX || 0, y: +msg.posY || 0, yaw: +msg.yaw || 0 };
+  lastSeen.telemetry = Date.now();
+  setDot('dot-odom', 'ok');
+  drawOverlay();
+}
+
+function onCostmap(msg) {
+  // Actualizar referencia espacial del canvas con el mapa estático
+  if (msg.mapData && msg.mapData.length > 0 && msg.mapWidth > 0) {
+    mapMeta = {
+      width:      msg.mapWidth,
+      height:     msg.mapHeight,
+      resolution: msg.mapResolution,
+      origin_x:   msg.mapOriginX,
+      origin_y:   msg.mapOriginY,
+      origin_yaw: msg.mapOriginYaw || 0,
+    };
+    drawStaticMap(msg);
+    lastSeen.map = Date.now();
+    setDot('dot-map', 'ok');
+  }
+
+  // Fallback si el mapa estático aún no llegó
+  if (!mapMeta && msg.width > 0) {
+    mapMeta = {
+      width: msg.width, height: msg.height,
+      resolution: msg.resolution,
+      origin_x: msg.originX, origin_y: msg.originY,
+      origin_yaw: 0,
+    };
+  }
+
+  // robotPose lo actualiza onTelemetry a 10 Hz — aquí no lo tocamos
+  // para evitar saltos causados por la latencia del costmap (2 Hz)
+  drawCostmap(msg);
+}
+
+function onPath(msg) {
+  rutaPoses     = msg.poses         || [];
+  particlePoses = msg.particlePoses || [];
+  drawOverlay();
+}
+
+function onNodeStatus(msg) {
+  const lista = document.getElementById('node-list');
+  lista.innerHTML = '';
+  const now = Date.now() / 1000;
+  for (const n of (msg.nodes || [])) {
+    const badge = n.alive ? 'ok'
+      : (n.lastSeen > 0 && (now - n.lastSeen) < 10) ? 'wait' : 'dead';
+    const div = document.createElement('div');
+    div.className = 'node-item';
+    div.innerHTML = `
+      <span class="node-name">${n.name}</span>
+      <span class="node-badge badge-${badge}">
+        ${badge === 'ok' ? 'activo' : badge === 'wait' ? 'esperando' : 'muerto'}
+      </span>`;
+    lista.appendChild(div);
+  }
+}
+
+function onCamera(msg) {
+  if (!msg.jpegData || !msg.jpegData.length) return;
+  const blob = new Blob([Uint8Array.from(msg.jpegData)], { type: 'image/jpeg' });
+  const url  = URL.createObjectURL(blob);
+  const img  = document.getElementById('cam-img');
+  const prev = img.src;
+  img.onload = () => {
+    if (prev) URL.revokeObjectURL(prev);
+    document.getElementById('cam-placeholder').style.display = 'none';
+    drawBboxes(msg.detections || [], img);
+  };
+  img.src = url;
+  lastSeen.camera = Date.now();
+  setDot('dot-cam', 'ok');
+}
+
+// ─── Renderizado del mapa — 3 capas canvas ────────────────────────────────────
+
+function drawStaticMap(msg) {
+  const canvas = document.getElementById('canvas-map');
+  const ctx    = canvas.getContext('2d');
+  const data   = msg.mapData;
+  const mw = msg.mapWidth, mh = msg.mapHeight;
+  if (!mw || !mh || !data.length) return;
+
+  const img = ctx.createImageData(W, H);
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++) {
+      const mc  = Math.floor((px / W) * mw);
+      const mr  = Math.floor(((H - 1 - py) / H) * mh);
+      const val = data[mr * mw + mc];
+      let r, g, b;
+      if      (val === 0)   { r = 240; g = 240; b = 240; }  // libre
+      else if (val === 100) { r = 30;  g = 30;  b = 30;  }  // ocupado
+      else                  { r = 130; g = 130; b = 130; }  // desconocido
+      const i = (py * W + px) * 4;
+      img.data[i] = r; img.data[i+1] = g; img.data[i+2] = b; img.data[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawCostmap(msg) {
+  const canvas = document.getElementById('canvas-costmap');
+  const ctx    = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  if (!mapMeta || !msg.width || !msg.height || !msg.data || !msg.data.length) {
+    drawOverlay();
+    return;
+  }
+
+  const UMBRAL = 15;
+  const imgData = ctx.createImageData(W, H);
+  const yaw = mapMeta.origin_yaw || 0;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++) {
+      const col_m = (px / W) * mapMeta.width;
+      const row_m = mapMeta.height - 1 - (py / H) * mapMeta.height;
+      const wx = mapMeta.origin_x + mapMeta.resolution * (col_m * c - row_m * s);
+      const wy = mapMeta.origin_y + mapMeta.resolution * (col_m * s + row_m * c);
+
+      const dx_c = wx - msg.originX, dy_c = wy - msg.originY;
+      const cc = Math.floor((dx_c * c + dy_c * s) / msg.resolution);
+      const cr = Math.floor((-dx_c * s + dy_c * c) / msg.resolution);
+      if (cc < 0 || cc >= msg.width || cr < 0 || cr >= msg.height) continue;
+
+      const val = msg.data[cr * msg.width + cc];
+      if (val <= 0 || val < UMBRAL) continue;
+
+      const t     = Math.min((val - UMBRAL) / (100 - UMBRAL), 1.0);
+      const alpha = 0.18 + t * 0.62;
+      const i = (py * W + px) * 4;
+      imgData.data[i]   = Math.round(15 + t * 10);
+      imgData.data[i+1] = Math.round(15 + t * 10);
+      imgData.data[i+2] = Math.round(30 + t * 20);
+      imgData.data[i+3] = Math.round(alpha * 255);
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  drawOverlay();
+}
+
+function drawOverlay() {
+  const canvas = document.getElementById('canvas-overlay');
+  const ctx    = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  if (!mapMeta) return;
+
+  // 1. Partículas MCL
+  if (particlePoses.length > 0) {
+    ctx.save();
+    for (const p of particlePoses) {
+      const [px, py] = worldToCanvas(p.x, p.y);
+      ctx.beginPath();
+      ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(248,81,73,0.55)';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 2. Ruta planificada
+  if (rutaPoses.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth   = 2.5;
+    ctx.lineJoin    = 'round';
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < rutaPoses.length; i++) {
+      const [px, py] = worldToCanvas(rutaPoses[i].x, rutaPoses[i].y);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 3. Waypoints
+  for (let i = 0; i < waypoints.length; i++) {
+    const [cx, cy] = worldToCanvas(waypoints[i].x, waypoints[i].y);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+    ctx.fillStyle   = '#d29922';
+    ctx.strokeStyle = '#0d1117';
+    ctx.lineWidth   = 1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle    = '#0d1117';
+    ctx.font         = 'bold 9px sans-serif';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i + 1, cx, cy);
+  }
+
+  // 4. Robot
+  const [rx, ry] = worldToCanvas(robotPose.x, robotPose.y);
+  const originYaw = mapMeta ? (mapMeta.origin_yaw || 0) : 0;
+  drawRobot(ctx, rx, ry, robotPose.yaw, originYaw);
+}
+
+function drawRobot(ctx, cx, cy, yaw, originYaw = 0) {
+  const R = 9, RW = 3, RL = 7;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(originYaw - yaw);
+
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur  = 4;
+
+  // Ruedas
+  ctx.fillStyle = '#444';
+  ctx.fillRect(-RL/2, -(R + RW), RL, RW);
+  ctx.fillRect(-RL/2,  R,        RL, RW);
+
+  // Cuerpo
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.fillStyle   = '#3fb950';
+  ctx.strokeStyle = '#0d1117';
+  ctx.lineWidth   = 2;
+  ctx.fill(); ctx.stroke();
+
+  // Flecha de dirección
+  ctx.beginPath();
+  ctx.moveTo(-R * 0.1, 0);
+  ctx.lineTo( R * 0.8, 0);
+  ctx.strokeStyle = '#0d1117';
+  ctx.lineWidth   = 3;
+  ctx.lineCap     = 'round';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(R * 0.8,  0);
+  ctx.lineTo(R * 0.5, -R * 0.35);
+  ctx.lineTo(R * 0.5,  R * 0.35);
+  ctx.closePath();
+  ctx.fillStyle = '#0d1117';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ─── Conversión coordenadas ───────────────────────────────────────────────────
+
+function worldToCanvas(wx, wy) {
+  if (!mapMeta) return [W / 2, H / 2];
+  const { width: mw, height: mh, resolution, origin_x, origin_y, origin_yaw } = mapMeta;
+  const yaw = origin_yaw || 0;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const dx = wx - origin_x, dy = wy - origin_y;
+  const col =  (dx * c + dy * s) / resolution;
+  const row = (-dx * s + dy * c) / resolution;
+  return [
+    (col / mw) * W,
+    ((mh - 1 - row) / mh) * H,
+  ];
+}
+
+function canvasToWorld(cx, cy) {
+  if (!mapMeta) return [0, 0];
+  const { width: mw, height: mh, resolution, origin_x, origin_y, origin_yaw } = mapMeta;
+  const yaw = origin_yaw || 0;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const col = (cx / W) * mw;
+  const row = mh - 1 - (cy / H) * mh;
+  const wx = origin_x + resolution * (col * c - row * s);
+  const wy = origin_y + resolution * (col * s + row * c);
+  return [wx, wy];
+}
+
+// ─── Cámara y detecciones ─────────────────────────────────────────────────────
+
+function drawBboxes(detections, img) {
+  const canvas = document.getElementById('cam-overlay');
+  canvas.width  = img.naturalWidth  || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const d of detections) {
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+    ctx.fillStyle = 'rgba(88,166,255,0.8)';
+    ctx.font      = '11px monospace';
+    ctx.fillText(`${d.label} ${(d.confidence * 100).toFixed(0)}%`, d.x1 + 2, d.y1 - 3);
+  }
+}
+
+// ─── Waypoints ────────────────────────────────────────────────────────────────
+
+document.getElementById('canvas-overlay').addEventListener('click', e => {
+  if (!mapMeta) return;
+  const rect   = e.currentTarget.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const cx     = (e.clientX - rect.left) * scaleX;
+  const cy     = (e.clientY - rect.top)  * scaleY;
+  const [wx, wy] = canvasToWorld(cx, cy);
+  waypoints.push({ x: wx, y: wy, yaw: 0, label: `WP${waypoints.length + 1}` });
+  renderWpList();
+  drawOverlay();
+});
+
+function renderWpList() {
+  const lista = document.getElementById('wp-list');
+  lista.innerHTML = '';
+  for (let i = 0; i < waypoints.length; i++) {
+    const wp  = waypoints[i];
+    const div = document.createElement('div');
+    div.className = 'wp-item';
+    div.innerHTML = `
+      <span class="wp-idx">${i + 1}</span>
+      <span class="wp-label">${wp.label}</span>
+      <span class="wp-coords">(${wp.x.toFixed(2)}, ${wp.y.toFixed(2)})</span>
+      <button class="wp-del" data-i="${i}">✕</button>`;
+    lista.appendChild(div);
+  }
+  lista.querySelectorAll('.wp-del').forEach(btn => {
+    btn.addEventListener('click', e => {
+      waypoints.splice(+e.target.dataset.i, 1);
+      renderWpList();
+      drawOverlay();
+    });
+  });
+}
+
+document.getElementById('btn-send-wp').addEventListener('click', async () => {
+  if (!cliente || waypoints.length === 0) {
+    document.getElementById('wp-hint').textContent = 'Agrega waypoints primero';
+    return;
+  }
+  const btn = document.getElementById('btn-send-wp');
+  btn.textContent = '⏳ Enviando…';
+  btn.disabled    = true;
+  try {
+    const resp = await cliente.sendWaypoints(waypoints);
+    document.getElementById('wp-hint').textContent =
+      resp && resp.accepted ? `✓ ${resp.count} WP enviados` : 'Error al enviar';
+  } catch (e) {
+    console.error(e);
+    document.getElementById('wp-hint').textContent = 'Error de conexión';
+  } finally {
+    btn.textContent = '▶ Enviar';
+    btn.disabled    = false;
+  }
+});
+
+document.getElementById('btn-clear-wp').addEventListener('click', () => {
+  waypoints = [];
+  renderWpList();
+  drawOverlay();
+  document.getElementById('wp-hint').textContent = 'clic en el mapa para agregar';
+});
+
+// ─── Tema ─────────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const html = document.documentElement;
+  const dark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', dark ? 'light' : 'dark');
+  document.getElementById('btn-theme').textContent = dark ? '☀️' : '🌙';
+});
+
+// ─── Utilidades ───────────────────────────────────────────────────────────────
+
+function setDot(id, estado) {
+  const dot = document.getElementById(id);
+  if (dot) dot.className = 'dot ' + estado;
+}
+
+// ─── Arranque ─────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

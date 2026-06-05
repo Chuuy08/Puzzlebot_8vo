@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package puzzlebot;
+
+// Servicio principal del dashboard — solo streams de monitoreo + envío de waypoints
+service PuzzlebotService {
+  // Streams de datos salientes (servidor → cliente)
+  rpc StreamTelemetry  (Empty)        returns (stream TelemetryData);
+  rpc StreamCostmap    (Empty)        returns (stream CostmapData);
+  rpc StreamPath       (Empty)        returns (stream PathData);
+  rpc StreamNodeStatus (Empty)        returns (stream NodeStatusList);
+  rpc StreamCamera     (Empty)        returns (stream CameraFrame);
+
+  // Comando unario: enviar lista de waypoints al robot
+  rpc SendWaypoints    (WaypointList) returns (WaypointResponse);
+}
+
+message Empty {}
+
+// ── Telemetría ───────────────────────────────────────────────────────────────
+message TelemetryData {
+  double pos_x       = 1;
+  double pos_y       = 2;
+  double yaw         = 3;
+  double vel_linear  = 4;
+  double vel_angular = 5;
+  double timestamp   = 6;
+}
+
+// ── Mapa y costmap ───────────────────────────────────────────────────────────
+message CostmapData {
+  // Costmap dinámico (/costmap)
+  repeated int32 data = 1;
+  int32  width        = 2;
+  int32  height       = 3;
+  double resolution   = 4;
+  double origin_x     = 5;
+  double origin_y     = 6;
+  double robot_x      = 7;
+  double robot_y      = 8;
+  double robot_yaw    = 9;
+  double timestamp    = 10;
+  // Mapa estático (/map) — capa de fondo, viaja junto al costmap
+  repeated int32 map_data    = 11;
+  int32  map_width           = 12;
+  int32  map_height          = 13;
+  double map_resolution      = 14;
+  double map_origin_x        = 15;
+  double map_origin_y        = 16;
+  double map_origin_yaw      = 17;
+}
+
+// ── Rutas y partículas ───────────────────────────────────────────────────────
+message Pose2D {
+  double x   = 1;
+  double y   = 2;
+  double yaw = 3;
+}
+
+message PathData {
+  repeated Pose2D poses          = 1;
+  double          timestamp      = 2;
+  repeated Pose2D particle_poses = 3;
+}
+
+// ── Estado de nodos ───────────────────────────────────────────────────────────
+message NodeStatus {
+  string name      = 1;
+  bool   alive     = 2;
+  double last_seen = 3;
+}
+
+message NodeStatusList {
+  repeated NodeStatus nodes = 1;
+  double              timestamp = 2;
+}
+
+// ── Cámara ────────────────────────────────────────────────────────────────────
+message BoundingBox {
+  float  x1         = 1;
+  float  y1         = 2;
+  float  x2         = 3;
+  float  y2         = 4;
+  string label      = 5;
+  float  confidence = 6;
+}
+
+message CameraFrame {
+  bytes              jpeg_data  = 1;
+  repeated BoundingBox detections = 2;
+  int32  width       = 3;
+  int32  height      = 4;
+  double timestamp   = 5;
+}
+
+// ── Waypoints ─────────────────────────────────────────────────────────────────
+message Waypoint {
+  double x     = 1;
+  double y     = 2;
+  double yaw   = 3;
+  string label = 4;
+}
+
+message WaypointList {
+  repeated Waypoint waypoints = 1;
+}
+
+message WaypointResponse {
+  bool   accepted = 1;
+  int32  count    = 2;
+  string message  = 3;
+}

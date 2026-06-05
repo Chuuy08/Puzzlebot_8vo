@@ -1,0 +1,323 @@
+/* ── Variables ──────────────────────────────────────────────────────────── */
+:root {
+  --bg-0:    #0d1117;
+  --bg-1:    #161b22;
+  --bg-2:    #21262d;
+  --border:  #30363d;
+  --text-1:  #e6edf3;
+  --text-2:  #8b949e;
+  --green:   #3fb950;
+  --yellow:  #d29922;
+  --red:     #f85149;
+  --blue:    #58a6ff;
+  --radius:  8px;
+}
+
+[data-theme="light"] {
+  --bg-0:   #f6f8fa;
+  --bg-1:   #ffffff;
+  --bg-2:   #eaeef2;
+  --border: #d0d7de;
+  --text-1: #1f2328;
+  --text-2: #57606a;
+}
+
+/* ── Reset base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Topbar ─────────────────────────────────────────────────────────────── */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#topbar h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: var(--text-1);
+}
+
+#topbar h1 span { color: var(--green); }
+
+.status-dots {
+  display: flex;
+  gap: 12px;
+  margin-left: 8px;
+}
+
+.dot-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.dot.ok   { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.dot.warn { background: var(--yellow); }
+.dot.err  { background: var(--red); }
+
+#latency-label {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+#btn-theme {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  cursor: pointer;
+  padding: 3px 8px;
+  font-size: 13px;
+}
+
+/* ── Layout principal ───────────────────────────────────────────────────── */
+#main {
+  display: grid;
+  grid-template-columns: 210px 1fr 240px;
+  gap: 8px;
+  padding: 8px;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Columnas ───────────────────────────────────────────────────────────── */
+#col-left, #col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+#col-center {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ── Panel genérico ─────────────────────────────────────────────────────── */
+.panel {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+/* ── Telemetría ─────────────────────────────────────────────────────────── */
+.telem-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.telem-cell {
+  background: var(--bg-2);
+  border-radius: 5px;
+  padding: 6px 8px;
+}
+
+.telem-cell .label {
+  font-size: 10px;
+  color: var(--text-2);
+  margin-bottom: 2px;
+}
+
+.telem-cell .value {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--green);
+}
+
+/* ── Estado de nodos ────────────────────────────────────────────────────── */
+#node-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.node-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border-radius: 5px;
+}
+
+.node-name { color: var(--text-1); font-size: 11px; }
+
+.node-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.badge-ok   { background: rgba(63,185,80,.15);  color: var(--green); }
+.badge-wait { background: rgba(210,153,34,.15); color: var(--yellow); }
+.badge-dead { background: rgba(248,81,73,.15);  color: var(--red); }
+
+/* ── Mapa ───────────────────────────────────────────────────────────────── */
+#map-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: 4/3;
+  width: auto;
+  align-self: center;
+  background: #111;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+#map-wrap canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+}
+
+/* ── Cámara ─────────────────────────────────────────────────────────────── */
+#cam-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: #111;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+#cam-wrap img, #cam-wrap canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+
+#cam-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* ── Waypoints ──────────────────────────────────────────────────────────── */
+#wp-list {
+  overflow-y: auto;
+  max-height: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wp-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.wp-idx {
+  background: var(--yellow);
+  color: #000;
+  font-weight: 700;
+  font-size: 10px;
+  width: 17px; height: 17px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+.wp-label  { flex: 1; color: var(--text-1); }
+.wp-coords { color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+.wp-del {
+  background: none;
+  border: none;
+  color: var(--red);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+#wp-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ── Botones ────────────────────────────────────────────────────────────── */
+.btn {
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-2);
+  color: var(--text-1);
+  transition: opacity .15s;
+}
+
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn:not(:disabled):hover { opacity: .85; }
+
+.btn-primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #000;
+}
+
+.btn-danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
