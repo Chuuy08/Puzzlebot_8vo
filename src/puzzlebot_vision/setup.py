@@ -14,6 +14,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'scripts'),
             glob('scripts/*.py')),
+        (os.path.join('share', package_name, 'models'),
+            glob('models/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +28,8 @@ setup(
         'console_scripts': [
             'evaluate_model = puzzlebot_vision.evaluate_model:main',
             'camera_inference = puzzlebot_vision.camera_inference:main',
+            'tracking = puzzlebot_vision.tracking:main',
+            'align_and_approach = puzzlebot_vision.align_and_approach:main',
         ],
     },
 )
