@@ -279,7 +279,7 @@ class MCLNode(Node):
         self.particles[:, 1] += tr_n * np.sin(self.particles[:, 2] + r1_n)
         self.particles[:, 2]  = wrap_angle_v(self.particles[:, 2] + r1_n + r2_n)
 
-        self.accum_d += trans
+        self.accum_d += abs(trans)
         self.accum_a += abs(dth)
         self.prev_odom = curr
 

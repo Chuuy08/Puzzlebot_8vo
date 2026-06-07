@@ -25,6 +25,14 @@ Comandos (terminal interactiva):
   align off         -> vuelve a 'sin confirmar' (por si quieres reiniciar la prueba)
   salir             -> termina
 
+Reinicio automático entre áreas: mission_manager anuncia el inicio de cada
+barrido en /mission_sweep_area (ver _start_sweep) — este nodo lo escucha y
+reinicia solo su estado simulado a 'sin pallet / sin alinear' cada vez que
+empieza un área nueva, para no arrastrar por accidente el "pallet cliente2"
+de un área a la siguiente (como pasaba al probar manualmente la búsqueda
+rack1->rack2->rack3). Sigue pudiéndose sobreescribir con los comandos de
+arriba en cualquier momento, igual que antes.
+
 Uso:
   ros2 run puzzlebot_mission vision_faker
 """
@@ -58,6 +66,12 @@ class VisionFaker(Node):
         self._qr_content = ''
         self._aligned = False
 
+        # Reinicio automático al cambiar de área (ver _cb_sweep_area) — evita
+        # arrastrar por accidente el último "pallet clienteN"/"align on" de
+        # un área a la siguiente cuando se prueba manualmente la búsqueda
+        # rack1->rack2->rack3.
+        self.create_subscription(String, '/mission_sweep_area', self._cb_sweep_area, _RELIABLE)
+
         # Publica el estado actual a 10 Hz — mission_manager solo recuerda el
         # último valor recibido de cada topic, pero conviene refrescarlo
         # seguido para que las muestras del barrido (5 lecturas a 10 Hz tras
@@ -70,6 +84,23 @@ class VisionFaker(Node):
 
         self._input_thread = threading.Thread(target=self._input_loop, daemon=True)
         self._input_thread.start()
+
+    def _cb_sweep_area(self, msg: String):
+        """mission_manager anunció el inicio de un barrido nuevo (ver
+        _start_sweep) → reinicia el estado simulado a 'sin pallet / sin
+        alinear', como si se hubiera mandado 'nopallet' + 'align off'.
+        Así cada área arranca en blanco y hay que comandar explícitamente
+        el pallet (y la alineación) que se quiera simular para ESA área,
+        sin arrastrar el de la anterior por descuido."""
+        if not (self._detected or self._has_qr or self._qr_content or self._aligned):
+            return  # ya estaba en blanco — no ensuciar la consola con ruido
+        self._detected = False
+        self._has_qr = False
+        self._qr_content = ''
+        self._aligned = False
+        self.get_logger().info(
+            f'-> Área "{msg.data}": estado de visión reiniciado automáticamente '
+            f'(sin pallet, sin alinear) — usa "pallet clienteN"/"align on" si quieres simularlo aquí')
 
     def _publish_current_state(self):
         self._det_pub.publish(Bool(data=self._detected))

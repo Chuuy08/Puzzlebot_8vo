@@ -10,6 +10,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rcl_interfaces.msg import SetParametersResult
 
 from .utils import quat_to_yaw
 
@@ -60,6 +61,12 @@ class CostmapNode(Node):
         self._rmin         = self.get_parameter('laser_min_range').value
 
         self._static_costmap: np.ndarray | None = None
+        self._raw_map: np.ndarray | None = None   # capa de /map sin inflar — se cachea
+                                                   # para poder recalcular _static_costmap
+                                                   # si 'inflation_radius' cambia en caliente
+                                                   # (ver _on_set_parameters, usado por
+                                                   # mission_manager para desinflar/inflar
+                                                   # alrededor de la zona de entrega)
 
         self._map_W   = 0
         self._map_H   = 0
@@ -91,6 +98,7 @@ class CostmapNode(Node):
         self._pub = self.create_publisher(OccupancyGrid, '/costmap', _LATCHED_QOS)
 
         self.create_timer(1.0 / pub_rate, self._timer_cb)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.get_logger().info(
             f'costmap_node listo | inflation={self._r_inf} m '
@@ -115,6 +123,7 @@ class CostmapNode(Node):
         self._map_sin = math.sin(map_yaw)
 
         raw = np.array(msg.data, dtype=np.int8).reshape(H, W)
+        self._raw_map = raw
         self._static_costmap = self._inflate(raw, res, self._r_inf)
         self._dynamic_grid = np.zeros((H, W), dtype=np.int8)
         self._publish_combined()
@@ -125,6 +134,33 @@ class CostmapNode(Node):
         self.get_logger().info(
             f'Mapa cargado: {W}×{H} @ {res} m/px | '
             f'paredes={n_par} infladas={n_inf} libres={n_lib}')
+
+    def _on_set_parameters(self, params):
+        """Permite cambiar 'inflation_radius' en caliente (servicio
+        set_parameters) y recalcula _static_costmap al vuelo a partir del
+        _raw_map cacheado — por defecto el valor se lee una sola vez en
+        __init__ y queda congelado. mission_manager usa esto para "desinflar"
+        la zona de entrega (que de otro modo queda dentro del costmap inflado
+        y rrt_node nunca encuentra ruta) y volver a inflarla al terminar."""
+        for p in params:
+            if p.name == 'inflation_radius':
+                self._r_inf = float(p.value)
+                if self._raw_map is not None:
+                    self._static_costmap = self._inflate(self._raw_map, self._map_res, self._r_inf)
+                    self._publish_combined()
+                    n_inf = int(np.sum(self._static_costmap == 99))
+                    n_lib = int(np.sum(self._static_costmap == 0))
+                    self.get_logger().info(
+                        f'inflation_radius actualizado a {self._r_inf} m | '
+                        f'infladas={n_inf} libres={n_lib}')
+            elif p.name == 'dynamic_inflation_radius':
+                # A diferencia de la estática, la capa dinámica se recalcula
+                # de cero en cada /scan (_scan_cb -> _inflate_hits) usando
+                # self._dyn_r_inf directo — no hay nada cacheado que recalcular,
+                # el cambio queda activo desde el siguiente scan.
+                self._dyn_r_inf = float(p.value)
+                self.get_logger().info(f'dynamic_inflation_radius actualizado a {self._dyn_r_inf} m')
+        return SetParametersResult(successful=True)
 
     def _pose_cb(self, msg: PoseWithCovarianceStamped):
         self._robot_x   = msg.pose.pose.position.x

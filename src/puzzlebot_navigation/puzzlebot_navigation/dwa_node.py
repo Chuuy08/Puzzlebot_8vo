@@ -11,6 +11,7 @@ from nav_msgs.msg import Path
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool
+from rcl_interfaces.msg import SetParametersResult
 
 from .utils import quat_to_yaw, wrap_angle
 
@@ -98,6 +99,7 @@ class DWANode(Node):
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', _RELIABLE)
         self.create_timer(1.0 / ctrl_rate, self._loop)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.get_logger().info(
             f'dwa_node listo | r_robot={self._r_robot} m | '
@@ -110,6 +112,22 @@ class DWANode(Node):
 
     def _external_cmd_cb(self, msg: Bool):
         self._external_active = msg.data
+
+    def _on_set_parameters(self, params):
+        """Permite cambiar 'robot_radius' en caliente — por defecto se lee
+        una sola vez en __init__ y queda congelado. self._r_robot se usa
+        directo en cada ciclo de _loop (_proximity_brake/_clearance/_recovery),
+        así que el cambio queda activo desde el siguiente ciclo, sin
+        recálculos. mission_manager lo reduce temporalmente al entrar a la
+        zona de entrega (pasillo angosto pegado a la pared, donde el valor
+        normal hace que el robot frene a 0 y oscile en _recovery sin decidirse
+        a entrar) y lo restaura al salir — junto con inflation_radius/
+        dynamic_inflation_radius de costmap_node."""
+        for p in params:
+            if p.name == 'robot_radius':
+                self._r_robot = float(p.value)
+                self.get_logger().info(f'robot_radius actualizado a {self._r_robot} m')
+        return SetParametersResult(successful=True)
 
     def _scan_cb(self, msg: LaserScan):
         """Convierte el LaserScan a puntos (x,y) en el frame del robot."""

@@ -26,6 +26,9 @@ delivery:
   cliente3:
     position: {x: 3.57, y: -1.474}
     orientation: {w: 0.9999, z: 0.0147}
+  acceso:
+    position: {x: 2.739, y: -0.825}
+    orientation: {w: 0.9991, z: 0.0428}
 rodillos:
   general:
     position: {x: -0.262, y: -2.078}
