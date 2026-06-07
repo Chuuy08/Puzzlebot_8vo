@@ -1,0 +1,83 @@
+# Waypoints de la misión autónoma del PuzzleBot.
+#
+# IMPORTANTE: las posiciones de abajo son PLACEHOLDERS (0.0) para poder
+# probar la máquina de estados del mission_manager en simulación antes
+# de tener el mapa real medido. Reemplázalas por las coordenadas reales
+# (en el frame 'map') antes de correr en el robot real.
+#
+# Cada punto define:
+#   position:    {x, y}       — en metros, frame 'map'
+#   orientation: {w}          — quaternion solo-yaw (w = cos(yaw/2)); si necesitas
+#                                una orientación distinta de 0 rad agrega también
+#                                el campo 'z' (z = sin(yaw/2))
+#
+# 'general' es el primer waypoint de cada zona — ahí el robot se detiene
+# y arranca el barrido rotacional para contar pallets / buscar QR.
+# 'p1'..'pN' son los puntos de recogida específicos de cada pallet,
+# numerados de izquierda a derecha tal como los ve el robot parado en 'general'.
+
+delivery:
+  cliente1:
+    position: {x: 3.56, y: -0.451}
+    orientation: {w: 0.9993, z: 0.0385}
+  cliente2:
+    position: {x: 3.541, y: -0.958}
+    orientation: {w: 1.0, z: 0.01}
+  cliente3:
+    position: {x: 3.57, y: -1.474}
+    orientation: {w: 0.9999, z: 0.0147}
+rodillos:
+  general:
+    position: {x: -0.262, y: -2.078}
+    orientation: {w: 0.2738, z: -0.9618}
+  p1:
+    position: {x: -0.404, y: -2.887}
+    orientation: {w: 0.0129, z: -0.9999}
+  p2:
+    position: {x: -0.415, y: -2.316}
+    orientation: {w: 0.0046, z: -1.0}
+  p3:
+    position: {x: -0.447, y: -1.825}
+    orientation: {w: 0.0064, z: -1.0}
+  p4:
+    position: {x: -0.52, y: -1.324}
+    orientation: {w: 0.0042, z: -1.0}
+rack1:
+  general:
+    position: {x: 0.894, y: -1.922}
+    orientation: {w: 0.6899, z: -0.7239}
+  p1:
+    position: {x: 0.709, y: -1.678}
+    orientation: {w: 0.6312, z: -0.7756}
+  p2:
+    position: {x: 0.369, y: -1.639}
+    orientation: {w: 0.6621, z: -0.7494}
+  p3:
+    position: {x: 0.011, y: -1.659}
+    orientation: {w: 0.7102, z: -0.704}
+rack2:
+  general:
+    position: {x: 0.89, y: -1.93}
+    orientation: {w: 0.3817, z: 0.9243}
+  p1:
+    position: {x: 0.022, y: -2.202}
+    orientation: {w: 0.7153, z: 0.6988}
+  p2:
+    position: {x: 0.373, y: -2.149}
+    orientation: {w: 0.7028, z: 0.7114}
+  p3:
+    position: {x: 0.734, y: -2.158}
+    orientation: {w: 0.6436, z: 0.7654}
+rack3:
+  general:
+    position: {x: 0.895, y: -1.91}
+    orientation: {w: 0.9828, z: 0.1845}
+  p1:
+    position: {x: 1.074, y: -1.558}
+    orientation: {w: 0.9983, z: 0.058}
+  p2:
+    position: {x: 1.036, y: -1.876}
+    orientation: {w: 0.9994, z: 0.0359}
+  p3:
+    position: {x: 1.023, y: -2.186}
+    orientation: {w: 0.9997, z: 0.023}

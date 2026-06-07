@@ -8,16 +8,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, PoseArray
-from sensor_msgs.msg import JointState, Image
+from sensor_msgs.msg import JointState, CompressedImage
 from std_msgs.msg import Bool, Float32
 from geometry_msgs.msg import Twist
-
-try:
-    import cv2
-    from cv_bridge import CvBridge
-    _CV_OK = True
-except Exception:
-    _CV_OK = False
 
 _DEAD_TIMEOUT = 5.0
 
@@ -58,7 +51,6 @@ class RosBridge(Node):
     def __init__(self):
         super().__init__('puzzlebot_gui_bridge')
         self._lock = threading.Lock()
-        self._cv_bridge = CvBridge() if _CV_OK else None
 
         # Estado interno
         self._odom_pose  = None   # {x, y, yaw, vl, va, t} — fuente de velocidades
@@ -101,7 +93,7 @@ class RosBridge(Node):
         self.create_subscription(Bool,                      '/mcl_wandering',     self._wandering_cb,     _RELIABLE_QOS)
         self.create_subscription(JointState,                '/joint_states',      self._joint_states_cb,  _RELIABLE_QOS)
         self.create_subscription(Float32,                   '/wr',                self._wr_cb,            _SENSOR_QOS)
-        self.create_subscription(Image,                     '/image_raw',         self._image_cb,         _SENSOR_QOS)
+        self.create_subscription(CompressedImage,           '/align/compressed',  self._image_cb,         _SENSOR_QOS)
 
         # Publicadores — solo waypoints
         self._pub_goal = self.create_publisher(PoseStamped, '/goal_pose', _RELIABLE_QOS)
@@ -233,23 +225,19 @@ class RosBridge(Node):
         with self._lock:
             self._node_stamps['joint_vel_bridge'] = time.time()
 
-    def _image_cb(self, msg: Image):
-        if not _CV_OK or self._cv_bridge is None:
+    def _image_cb(self, msg: CompressedImage):
+        # tracking.py ya publica el JPEG con las detecciones YOLO y la línea de
+        # alineación dibujadas, así que solo se reenvía tal cual (sin recodificar).
+        if not msg.data:
             return
-        try:
-            cv_img = self._cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
-            ok, encoded = cv2.imencode('.jpg', cv_img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok:
-                with self._lock:
-                    self._camera = {
-                        'jpeg_data':  encoded.tobytes(),
-                        'detections': [],
-                        'width':      msg.width,
-                        'height':     msg.height,
-                        'timestamp':  time.time(),
-                    }
-        except Exception as exc:
-            self.get_logger().warn(f'Error procesando imagen: {exc}')
+        with self._lock:
+            self._camera = {
+                'jpeg_data':  bytes(msg.data),
+                'detections': [],
+                'width':      0,
+                'height':     0,
+                'timestamp':  time.time(),
+            }
 
     # ── Waypoints ─────────────────────────────────────────────────────────────
 

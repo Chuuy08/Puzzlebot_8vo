@@ -80,6 +80,8 @@ class DWANode(Node):
         self._pose_ready = False
         self._rx = self._ry = self._rth = 0.0
         self._wandering = False     # True cuando active_localization controla cmd_vel
+        self._external_active = False  # True cuando otro nodo (p.ej. mission_manager
+                                        # durante el barrido) controla /cmd_vel directo
 
         self.create_subscription(
             LaserScan, scan_topic, self._scan_cb, _RELIABLE)
@@ -91,6 +93,8 @@ class DWANode(Node):
             PoseWithCovarianceStamped, '/mcl_pose', self._pose_cb, _RELIABLE)
         self.create_subscription(
             Bool, '/mcl_wandering', self._wandering_cb, 10)
+        self.create_subscription(
+            Bool, '/external_cmd_vel_active', self._external_cmd_cb, 10)
 
         self._pub = self.create_publisher(Twist, '/cmd_vel', _RELIABLE)
         self.create_timer(1.0 / ctrl_rate, self._loop)
@@ -103,6 +107,9 @@ class DWANode(Node):
 
     def _wandering_cb(self, msg: Bool):
         self._wandering = msg.data
+
+    def _external_cmd_cb(self, msg: Bool):
+        self._external_active = msg.data
 
     def _scan_cb(self, msg: LaserScan):
         """Convierte el LaserScan a puntos (x,y) en el frame del robot."""
@@ -137,6 +144,11 @@ class DWANode(Node):
     def _loop(self):
         # Ceder control a active_localization_node durante re-localización activa
         if self._wandering:
+            return
+
+        # Ceder control a otro nodo que está manejando /cmd_vel directamente
+        # (p.ej. mission_manager_node durante el barrido rotacional de pallets)
+        if self._external_active:
             return
 
         # Sin datos suficientes → parar (seguro por defecto)

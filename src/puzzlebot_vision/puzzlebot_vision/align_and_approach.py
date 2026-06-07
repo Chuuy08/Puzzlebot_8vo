@@ -6,6 +6,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool, String
 from ament_index_python import get_package_share_directory
 from pyzbar.pyzbar import decode as zbar_decode
 
@@ -31,6 +32,12 @@ class AlignAndApproach(Node):
         self.publisher = self.create_publisher(CompressedImage, '/annotated_yolo_staged/compressed', 10)
         self.al_pub = self.create_publisher(CompressedImage, '/align_staged/compressed', 10)
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Cierre del ciclo con mission_manager_node / fpga_controller_node.
+        self.det_pub = self.create_publisher(Bool, '/pallet_detected', 10)
+        self.qr_flag_pub = self.create_publisher(Bool, '/pallet_has_qr', 10)
+        self.qr_content_pub = self.create_publisher(String, '/pallet_qr_content', 10)
+        self.alineacion_pub = self.create_publisher(Bool, '/alineation/booleano', 10)
 
         self.class_ID = 3
         self.qr_class_ID = 4
@@ -106,12 +113,17 @@ class AlignAndApproach(Node):
             twist_msg = Twist()
             best_box, qr_roi = self.find_target(results, h, w)
 
+            detected = best_box is not None
+            qr_text = None
+            state = None
+
             if best_box is not None:
-                xmin4, ymin4, xmax4, ymax4 = qr_roi
-                if ymax4 > ymin4 and xmax4 > xmin4:
-                    text = self.decode(cv_image[ymin4:ymax4, xmin4:xmax4])
-                    if text is not None:
-                        self.get_logger().info(f'QR: {text}')
+                if qr_roi is not None:
+                    xmin4, ymin4, xmax4, ymax4 = qr_roi
+                    if ymax4 > ymin4 and xmax4 > xmin4:
+                        qr_text = self.decode(cv_image[ymin4:ymax4, xmin4:xmax4])
+                        if qr_text is not None:
+                            self.get_logger().info(f'QR: {qr_text}')
 
                 xmin3, ymin3, xmax3, ymax3 = best_box
                 center_x = (xmin3 + xmax3) // 2
@@ -147,6 +159,12 @@ class AlignAndApproach(Node):
                 self.get_logger().info(f'Target class {self.class_ID} with QR above not found.')
                 twist_msg.linear.x = 0.0
                 twist_msg.angular.z = 0.0
+
+            self.det_pub.publish(Bool(data=detected))
+            self.qr_flag_pub.publish(Bool(data=qr_text is not None))
+            if qr_text is not None:
+                self.qr_content_pub.publish(String(data=qr_text))
+            self.alineacion_pub.publish(Bool(data=(state == 'ARRIVED')))
 
             self.vel_pub.publish(twist_msg)
             self.publish(annotated_frame, align_frame)

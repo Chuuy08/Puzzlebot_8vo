@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool, String
 import cv2
 import os
 import numpy as np
@@ -33,9 +34,23 @@ class Utils(Node):
         self.upper_blue = np.array([130, 255, 255])
         self.MAX_SPEED = 0.05
 
+        # Condición de convergencia (no existía): N frames consecutivos con
+        # error_x y error_y por debajo del umbral -> se declara ARRIVED y se detiene.
+        self.CONVERGENCE_ERROR_THRESHOLD = 0.08
+        self.CONVERGENCE_FRAMES_REQUIRED = 5
+        self._converged_count = 0
+
         self.publisher = self.create_publisher(CompressedImage, '/annotated_yolo/compressed', 10)
         self.al_pub = self.create_publisher(CompressedImage, '/align/compressed', 10)
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Cierre del ciclo con mission_manager_node / fpga_controller_node
+        # (mismos topics que align_and_approach.py para poder comparar ambos nodos).
+        self.det_pub = self.create_publisher(Bool, '/pallet_detected', 10)
+        self.qr_flag_pub = self.create_publisher(Bool, '/pallet_has_qr', 10)
+        self.qr_content_pub = self.create_publisher(String, '/pallet_qr_content', 10)
+        self.alineacion_pub = self.create_publisher(Bool, '/alineation/booleano', 10)
+
         self.get_logger().info('Alignment testing')
 
     def decode(self, roi):
@@ -84,32 +99,36 @@ class Utils(Node):
                     boxes_4.append(coords)
             
             best_box = None
-            
+            qr_text = None
+
             for b3 in boxes_3:
                 xmin3, ymin3, xmax3, ymax3 = b3
                 center_x3 = (xmin3 + xmax3) // 2
-                
+
                 for b4 in boxes_4:
                     xmin4, ymin4, xmax4, ymax4 = b4
                     center_x4 = (xmin4 + xmax4) // 2
-                    
+
                     if ymax4 <= (ymin3 + 20) and (xmin3 <= center_x4 <= xmax3 or xmin4 <= center_x3 <= xmax4):
                         best_box = b3
-                        
+
                         ymin4_safe = max(0, ymin4)
                         ymax4_safe = min(h, ymax4)
                         xmin4_safe = max(0, xmin4)
                         xmax4_safe = min(w, xmax4)
-                        
+
                         if ymax4_safe > ymin4_safe and xmax4_safe > xmin4_safe:
                             roi = cv_image[ymin4_safe:ymax4_safe, xmin4_safe:xmax4_safe]
-                            x = self.decode(roi)
-                            if x is not None:
-                                self.get_logger().info(f'QR: {x}')
+                            qr_text = self.decode(roi)
+                            if qr_text is not None:
+                                self.get_logger().info(f'QR: {qr_text}')
                         break
                 if best_box is not None:
                     break
-            
+
+            detected = best_box is not None
+            state = None
+
             if best_box is not None:
                 center_x = (best_box[0] + best_box[2]) // 2
                 center_y = (best_box[1] + best_box[3]) // 2
@@ -117,19 +136,41 @@ class Utils(Node):
 
                 error_x = float(w_center - center_x) / (w / 2.0)
                 error_y = float(h_center - center_y) / (h / 2.0)
-                Kp = 0.1
-                Kp_ = 0.1
-                ang_z = error_x * Kp
-                linear = error_y * Kp_
-                twist_msg.linear.x = np.clip(linear, -self.MAX_SPEED, self.MAX_SPEED)
-                twist_msg.angular.z = np.clip(ang_z, -self.MAX_SPEED, self.MAX_SPEED)
-                
+
+                if (abs(error_x) < self.CONVERGENCE_ERROR_THRESHOLD
+                        and abs(error_y) < self.CONVERGENCE_ERROR_THRESHOLD):
+                    self._converged_count += 1
+                else:
+                    self._converged_count = 0
+
+                if self._converged_count >= self.CONVERGENCE_FRAMES_REQUIRED:
+                    state = 'ARRIVED'
+                    twist_msg.linear.x = 0.0
+                    twist_msg.angular.z = 0.0
+                else:
+                    state = 'TRACKING'
+                    Kp = 0.1
+                    Kp_ = 0.1
+                    ang_z = error_x * Kp
+                    linear = error_y * Kp_
+                    twist_msg.linear.x = float(np.clip(linear, -self.MAX_SPEED, self.MAX_SPEED))
+                    twist_msg.angular.z = float(np.clip(ang_z, -self.MAX_SPEED, self.MAX_SPEED))
+
+                cv2.putText(alignment_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                            1.0, (0, 255, 255), 2)
                 self.publish(annotated_frame, alignment_frame)
             else:
+                self._converged_count = 0
                 self.get_logger().info(f'Target class {self.class_ID} with QR above not found.')
                 self.publish(annotated_frame, alignment_frame)
                 twist_msg.linear.x = 0.0
                 twist_msg.angular.z = 0.0
+
+            self.det_pub.publish(Bool(data=detected))
+            self.qr_flag_pub.publish(Bool(data=qr_text is not None))
+            if qr_text is not None:
+                self.qr_content_pub.publish(String(data=qr_text))
+            self.alineacion_pub.publish(Bool(data=(state == 'ARRIVED')))
 
             self.vel_pub.publish(twist_msg)
 
