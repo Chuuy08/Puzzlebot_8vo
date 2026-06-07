@@ -1,0 +1,46 @@
+Pasos para recompilar libspi_fsm.so si modificas libspi_fsm.c
+==============================================================
+
+libspi_fsm.so es un binario COMPILADO a partir de libspi_fsm.c.
+No se genera automáticamente al hacer colcon build (no hay CMakeLists.txt
+para esto), así que cada vez que cambies el .c hay que repetir estos pasos
+a mano:
+
+1. Edita libspi_fsm.c con tus cambios.
+
+2. Recompílalo a .so en esta misma carpeta:
+
+       gcc -shared -fPIC -o libspi_fsm.so libspi_fsm.c
+
+   (debe quedar como ELF dinámico, igual que el actual: ELF 64-bit LSB
+   shared object, x86-64)
+
+   IMPORTANTE: compílalo en la MISMA arquitectura/SO donde va a correr
+   el nodo (p. ej. si el PuzzleBot corre en ARM, compílalo ahí o con
+   cross-compiler para ARM; un .so de x86-64 no cargará en ARM).
+
+3. Verifica que cargue antes de probar el nodo completo:
+
+       python3 -c "import ctypes; ctypes.CDLL('./libspi_fsm.so'); print('ok')"
+
+   Si truena aquí, el problema es de la librería, no del nodo de ROS.
+
+4. Reconstruye el paquete para que el .so actualizado se instale
+   (se copia vía data_files en setup.py):
+
+       cd ~/robotics_ws
+       colcon build --packages-select puzzlebot_fpga_controller
+       source install/setup.bash
+
+5. Prueba el nodo:
+
+       ros2 run puzzlebot_fpga_controller fpga_controller_node
+
+Funciones que exporta la librería (deben seguir existiendo con la misma
+firma si las usa fpga_controller_node.py vía ctypes):
+   spi_init, spi_close, spi_transfer, spi_get_estado,
+   esperar_estado, spi_send_command, spi_send_secuencia
+
+Si cambias la firma de alguna de estas funciones (tipos de argumentos o
+de retorno), recuerda actualizar también las declaraciones .restype /
+.argtypes correspondientes en fpga_controller_node.py.

@@ -72,8 +72,9 @@ class PathFollowerNode(Node):
         self.create_subscription(Empty, '/cancel_navigation', self._cancel_cb, 10)
         self.declare_parameter('output_topic', '/cmd_vel_reference')
         out_topic = self.get_parameter('output_topic').value
-        self._pub      = self.create_publisher(Twist, out_topic, _RELIABLE)
-        self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', _RELIABLE)
+        self._pub        = self.create_publisher(Twist, out_topic, _RELIABLE)
+        self._goal_pub   = self.create_publisher(PoseStamped, '/goal_pose', _RELIABLE)
+        self._reached_pub = self.create_publisher(Empty, '/waypoint_reached', _RELIABLE)
         self.get_logger().info(f'output_topic={out_topic}')
         self.create_timer(1.0 / ctrl_rate, self._loop)
 
@@ -124,6 +125,7 @@ class PathFollowerNode(Node):
         if dist_goal < self._g_tol:
             self._state = _DONE
             self._stop()
+            self._reached_pub.publish(Empty())
             self.get_logger().info(f'Goal alcanzado | error={dist_goal:.3f} m')
             return
 
