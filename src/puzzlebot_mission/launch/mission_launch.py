@@ -31,7 +31,7 @@ def generate_launch_description():
             'sweep_settle_time_s':       1.0,
             'sweep_samples_per_stop':    5,
             'nav_timeout_s':             90.0,
-            'fpga_settle_time_s':        5.0,
+            'fpga_settle_time_s':        2.0,
             'delivery_inflation_radius': 0.02,
             'delivery_robot_radius':     0.10,
             'pallet_inflation_radius':   0.10,

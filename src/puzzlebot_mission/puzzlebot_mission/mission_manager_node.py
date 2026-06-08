@@ -14,15 +14,21 @@ Coordina, vía los topics ya existentes en el sistema:
                    ya orquesta solo la secuencia de carga/descarga — el orquestador
                    NO necesita publicar ningún comando de "liberación")
 
-NOTA — hueco de sincronización con la FPGA (sin resolver todavía):
+NOTA — hueco de sincronización con la FPGA (mitigado, no resuelto de raíz):
   fpga_controller_node no publica NADA hacia afuera (toda su comunicación es
-  por SPI). Eso significa que no hay forma de saber, desde ROS, el instante
-  exacto en que el montacargas terminó de (a) cargar el pallet tras la
-  alineación, o (b) depositarlo en el punto de entrega. Mientras esa señal
-  no exista, este nodo usa una espera calibrada (`fpga_settle_time_s`) como
-  mitigación — ajústala según los tiempos reales de la FSM de la FPGA
-  (ver T_ROD_*/T_RACK_* en fpga_controller_node.py) o reemplázala si agregan
-  un publisher de "secuencia completa" del lado de la Jetson.
+  por SPI), así que no hay forma de saber, desde ROS, el instante exacto en
+  que el montacargas terminó de (a) levantar el pallet tras la alineación, o
+  (b) depositarlo en el punto de entrega. Pero según el comportamiento real
+  observado, el robot NO necesita esperar la secuencia COMPLETA de la FPGA en
+  ninguno de los dos puntos — solo el movimiento mecánico breve de subir/
+  bajar (~2s) antes de seguir adelante; el resto de la secuencia de la FPGA
+  (delays, fase de visión al bajar, etc.) no requiere que el robot esté
+  detenido. Por eso `fpga_settle_time_s` (usado en WAITING_LOAD y
+  WAITING_UNLOAD) es una espera CORTA y fija de ~2s, no un cálculo sobre
+  T_ROD_*/T_RACK_* (esas constantes son internas a la FSM de la FPGA, no una
+  guía de cuánto debe esperar el robot). Si algún día agregan un publisher de
+  "listo" del lado de la Jetson, esta espera se podría reemplazar por una
+  señal real — pero no es necesario para que la misión funcione.
 """
 
 import math
@@ -285,10 +291,17 @@ class MissionManagerNode(Node):
         # externo (GUI, logging) que quiera saber en qué área está parado.
         self._sweep_area_pub = self.create_publisher(String, '/mission_sweep_area', _RELIABLE)
         self._cmd_vel_pub   = self.create_publisher(Twist, '/cmd_vel', _RELIABLE)
-        # Bandera para que dwa_node ceda /cmd_vel mientras este nodo gira durante
-        # el barrido (replica el patrón de /mcl_wandering). REQUIERE modificar
-        # dwa_node para que la respete — ver advertencia pendiente.
+        # Bandera para que dwa_node ceda /cmd_vel mientras este nodo (o
+        # align_and_approach/tracking) maneja /cmd_vel directo durante el
+        # barrido / la alineación fina (replica el patrón de /mcl_wandering).
+        # dwa_node YA se suscribe a este topic y lo respeta en su _loop
+        # (ver _external_cmd_cb / self._external_active en dwa_node.py).
         self._ext_cmd_pub = self.create_publisher(Bool, '/external_cmd_vel_active', 10)
+        # align_and_approach reutiliza un único nodo para las 4 áreas de
+        # pickup y mantiene estado de fases entre ellas a propósito (ver
+        # _reset_phase_state allá) -- este topic le avisa "nuevo intento,
+        # olvida lo anterior" justo antes de cada SEND_DETECCION.
+        self._align_reset_pub = self.create_publisher(Empty, '/align_and_approach/reset', 10)
 
         # Clientes de servicio hacia costmap_node y dwa_node — para
         # desinflar/inflar la zona de entrega y reducir/restaurar el margen
@@ -477,9 +490,8 @@ class MissionManagerNode(Node):
 
     def _publish_external_cmd_active(self, active: bool):
         """Avisa que este nodo (no el stack de navegación) controla /cmd_vel.
-        REQUIERE que dwa_node se suscriba a este topic y ceda el control
-        igual que ya hace con /mcl_wandering — ese cambio todavía está
-        pendiente (ver advertencias)."""
+        dwa_node ya se suscribe a este topic y cede el control igual que
+        hace con /mcl_wandering (ver _external_cmd_cb en dwa_node.py)."""
         self._ext_cmd_pub.publish(Bool(data=active))
 
     def _do_sweep_turn(self):
@@ -977,6 +989,14 @@ class MissionManagerNode(Node):
         if st == MissionState.SEND_DETECCION:
             tipo = self._area_actual()
             self._send_deteccion_pallet(tipo)
+            # align_and_approach reutiliza el mismo nodo (y por tanto su
+            # estado de fases _align_phase/_approach_phase/_target_locked)
+            # para las 4 áreas de _PICKUP_AREAS -- sin avisarle de un nuevo
+            # intento, tras la primera llegada exitosa reportaría "ARRIVED"
+            # fantasma de inmediato en las siguientes 3, sin moverse. Este
+            # reset SIEMPRE precede al próximo intento de alineación, sea la
+            # primera área o la cuarta.
+            self._align_reset_pub.publish(Empty())
             # align_and_approach/tracking publican directo a /cmd_vel (no pasan
             # por dwa_node) durante la alineación fina — avisamos para que
             # dwa_node ceda el control y no compitan por /cmd_vel al mismo

@@ -7,7 +7,7 @@ from rclpy.node import Node
 from rclpy.duration import Duration
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, String, Empty
 from ament_index_python import get_package_share_directory
 from pyzbar.pyzbar import decode as zbar_decode
 
@@ -109,10 +109,7 @@ class AlignAndApproach(Node):
         #   MEASURE -> decide si hace falta corregir y lanza el pulso
         #   PULSE   -> gira a velocidad fija durante una duración acotada
         #   SETTLE  -> se detiene por completo y deja que cámara/robot se asienten
-        self._align_phase = 'MEASURE'
-        self._align_phase_deadline = self.get_clock().now()
-        self._align_pulse_sign = 0.0
-        self._align_pulse_scale = 1.0
+        # (valores iniciales asignados por _reset_phase_state, ver más abajo)
 
         # Phase 2 (APPROACHING): drive forward using bbox area (image coverage) as a
         # distance proxy, with a small angular correction to stay centered.
@@ -147,8 +144,7 @@ class AlignAndApproach(Node):
         # por tiempo fijo) -> 'DONE' (llegó, alto total). Una vez que se
         # entra a BLIND/DONE tiene prioridad ABSOLUTA sobre la visión: el
         # punto es justo dejar de confiar en lo que la cámara (no) ve aquí.
-        self._approach_phase = 'VISION'
-        self._blind_deadline = self.get_clock().now()
+        # (valor inicial asignado por _reset_phase_state, ver más abajo)
 
         # Compromiso con el objetivo: en cuanto se decodifica el QR una vez,
         # ya sabemos CON CERTEZA que es el pallet correcto -- y que para
@@ -159,12 +155,70 @@ class AlignAndApproach(Node):
         # que BLIND_APPROACH_*, ver rama `else` de image_callback) que
         # quedarse plantado a medio pasillo (síntoma reportado: "se detiene
         # y ya no avanza").
-        self._target_locked = False
+        # (valor inicial asignado por _reset_phase_state, ver más abajo)
+
+        # Ventana de gracia ante pérdida TOTAL estando LOCKED: un solo frame
+        # sin detección (motion blur, glare, un mal frame de YOLO) no debería
+        # bastar para comprometerse de forma IRREVERSIBLE al tramo ciego --
+        # eso produciría un "ARRIVED" falso (el robot apenas avanza ~5cm y
+        # se da por llegado) que dispararía a la FPGA a cargar en el lugar
+        # equivocado. Se tolera la pérdida hasta TARGET_LOST_GRACE segundos:
+        # durante esa ventana simplemente se PAUSA (sin comprometerse a
+        # nada); si el objetivo reaparece, _lost_since se reinicia y se
+        # sigue como si nada hubiera pasado. Solo si la pérdida persiste más
+        # allá de la ventana se concluye que es real -> tramo ciego.
+        self.TARGET_LOST_GRACE = 0.4  # s -- CALIBRAR: > un parpadeo típico de YOLO, < una pérdida real
+        # (valor inicial de _lost_since asignado por _reset_phase_state, ver más abajo)
 
         self.MAX_LINEAR = 0.05
         self.MAX_ANGULAR = 0.4
 
+        # Todo el estado de fases/compromiso de arriba (_align_phase,
+        # _approach_phase, _target_locked, _lost_since, ...) PERSISTE entre
+        # frames a propósito -- es justo lo que hace funcionar las máquinas
+        # de pulsos/aproximación/tramo ciego. Pero este mismo nodo se
+        # reutiliza para las 4 áreas de pickup de mission_manager_node
+        # (_PICKUP_AREAS = rodillos/rack1/rack2/rack3): sin resetearlo,
+        # tras la primera llegada exitosa (_approach_phase='DONE') las
+        # siguientes 3 reportarían "ARRIVED" fantasma de inmediato, sin
+        # moverse, disparando carga de FPGA en el pallet equivocado. Se
+        # inicializa aquí Y se vuelve a invocar en _reset_callback, disparado
+        # por mission_manager_node justo antes de cada nuevo intento de
+        # alineación (ver suscripción a /align_and_approach/reset abajo).
+        self._reset_phase_state()
+
+        self.reset_subscription = self.create_subscription(
+            Empty,
+            '/align_and_approach/reset',
+            self._reset_callback,
+            10
+        )
+
         self.get_logger().info('Align-then-approach tracking started')
+
+    def _reset_phase_state(self):
+        """(Re)inicializa todo el estado persistente de fases/compromiso al
+        valor de arranque de un intento de aproximación nuevo. Se llama una
+        vez desde __init__ y de nuevo cada vez que mission_manager_node
+        publica en /align_and_approach/reset (un nuevo pallet, posiblemente
+        en otra área -- ver el comentario junto a self._reset_phase_state()
+        en __init__ para el porqué)."""
+        now = self.get_clock().now()
+
+        self._align_phase = 'MEASURE'
+        self._align_phase_deadline = now
+        self._align_pulse_sign = 0.0
+        self._align_pulse_scale = 1.0
+
+        self._approach_phase = 'VISION'
+        self._blind_deadline = now
+
+        self._target_locked = False
+        self._lost_since = None
+
+    def _reset_callback(self, _msg: Empty):
+        self.get_logger().info('Reset recibido -> reiniciando fases para nuevo intento de aproximación')
+        self._reset_phase_state()
 
     def decode(self, roi):
         try:
@@ -270,6 +324,10 @@ class AlignAndApproach(Node):
 
             elif target_box is not None:
                 xmin, ymin, xmax, ymax = target_box
+                # Se ve algo este frame -> rompe cualquier racha de pérdida
+                # en curso (ver TARGET_LOST_GRACE): la próxima vez que se
+                # pierda, la ventana de gracia arranca de cero.
+                self._lost_since = None
 
                 if paired:
                     # Pallet+QR detectados juntos con geometría consistente
@@ -415,20 +473,43 @@ class AlignAndApproach(Node):
                     # bastante cerca/alineados como para decodificarlo.
                     # Perderlo ahora (oscilación que lo sacó del cuadro,
                     # blur, reflejo...) NO es motivo para clavar el freno a
-                    # medio pasillo: nos comprometemos al MISMO tramo ciego
-                    # que ya usamos cuando la visión anticipa que está por
-                    # perderse (ver BLIND_APPROACH_* / rama `if area_ratio
-                    # >= ...` arriba) -- aquí el disparo es la pérdida total
-                    # en lugar del área/borde, pero el destino es idéntico:
-                    # avanzar derecho, a ciegas, el tiempo ya calibrado.
-                    self._approach_phase = 'BLIND'
-                    self._blind_deadline = now + Duration(seconds=self.BLIND_APPROACH_DURATION)
-                    state = 'APPROACHING (target perdido, comprometido a tramo ciego)'
-                    twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
-                    twist_msg.angular.z = 0.0
-                    cv2.putText(align_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.7, (0, 165, 255), 2)
-                    self.get_logger().warn(f'{state} -> linear={twist_msg.linear.x:.3f}')
+                    # medio pasillo -- pero TAMPOCO para comprometerse de
+                    # forma IRREVERSIBLE al primer frame malo: un parpadeo
+                    # de un solo frame no debería bastar para declarar
+                    # "ARRIVED" a 5cm de donde se perdió. Se mide hace
+                    # cuánto empezó esta racha de pérdida (TARGET_LOST_GRACE)
+                    # y se decide según eso.
+                    if self._lost_since is None:
+                        self._lost_since = now
+                    lost_for = (now - self._lost_since).nanoseconds / 1e9
+
+                    if lost_for < self.TARGET_LOST_GRACE:
+                        # Ventana de gracia: probablemente solo un parpadeo
+                        # (motion blur, reflejo, un mal frame de YOLO) --
+                        # pausa sin comprometerse a nada. Si reaparece en el
+                        # siguiente frame, _lost_since se reinicia arriba y
+                        # seguimos exactamente donde íbamos, como si nada.
+                        state = f'LOCKED (parpadeo {lost_for:.2f}s, esperando)'
+                        twist_msg.linear.x = 0.0
+                        twist_msg.angular.z = 0.0
+                        self.get_logger().info(state)
+                    else:
+                        # La pérdida ya duró más que un parpadeo -> es real.
+                        # AHORA sí nos comprometemos al MISMO tramo ciego que
+                        # ya usamos cuando la visión anticipa que está por
+                        # perderse (ver BLIND_APPROACH_* / rama `if
+                        # area_ratio >= ...` arriba) -- aquí el disparo es
+                        # la pérdida sostenida en lugar del área/borde, pero
+                        # el destino es idéntico: avanzar derecho, a ciegas,
+                        # el tiempo ya calibrado.
+                        self._approach_phase = 'BLIND'
+                        self._blind_deadline = now + Duration(seconds=self.BLIND_APPROACH_DURATION)
+                        state = 'APPROACHING (target perdido, comprometido a tramo ciego)'
+                        twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
+                        twist_msg.angular.z = 0.0
+                        cv2.putText(align_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7, (0, 165, 255), 2)
+                        self.get_logger().warn(f'{state} -> linear={twist_msg.linear.x:.3f}')
                 else:
                     # Nunca se confirmó el objetivo (no se ha leído su QR
                     # todavía) -> no hay nada a qué comprometerse: frenar, y
