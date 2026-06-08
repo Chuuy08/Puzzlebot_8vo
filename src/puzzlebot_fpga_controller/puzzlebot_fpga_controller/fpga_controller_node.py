@@ -91,7 +91,7 @@ class FpgaControllerNode(Node):
         # Alineación completada
         self.create_subscription(
             Bool, '/alineation/booleano',
-            self._cb_alineacion, qos)
+            self._cb_alineacion, 10) # verificar
 
         # Waypoint alcanzado desde nav stack
         self.create_subscription(

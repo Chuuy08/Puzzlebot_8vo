@@ -87,7 +87,13 @@ class MissionState(Enum):
     # robot_radius — ver _start_costmap_reduce/_poll_costmap_inflation).
     NAV_TO_DELIVERY_ACCESO = auto() # navegando a delivery.acceso (punto fijo, fuera de la zona inflada)
     DEFLATE_COSTMAP        = auto() # reduciendo inflation_radius/dynamic_inflation_radius (y a veces robot_radius) vía set_parameters
-    NAV_TO_DELIVERY        = auto() # navegando al waypoint delivery[cliente]
+    NAV_TO_DELIVERY_ALIGN  = auto() # navegando a delivery.accesoc{N} — punto de pre-alineación
+                                    # propio del cliente N: deja al robot ya orientado para entrar
+                                    # en línea recta a delivery[clienteN] (la navegación no respeta
+                                    # la orientación final del goal, igual que 'general'/'p{N}' —
+                                    # ver ALIGN_TO_YAW; aquí se resuelve con un waypoint intermedio
+                                    # en vez de un giro porque además hay que recorrer distancia)
+    NAV_TO_DELIVERY        = auto() # navegando al waypoint delivery[cliente], ya alineado desde accesoc{N}
     WAITING_UNLOAD         = auto() # espera calibrada: FPGA terminando de depositar
     REVERSE_TO_ACCESO      = auto() # retrocediendo en línea recta a delivery.acceso (sin girar:
                                     # el montacargas queda justo enfrente y no hay espacio para voltearse)
@@ -314,6 +320,8 @@ class MissionManagerNode(Node):
             raise RuntimeError(f"waypoints.yaml: falta la clave 'delivery' en {path}")
         for cliente in ('cliente1', 'cliente2', 'cliente3'):
             self._validar_punto(data['delivery'], cliente, f'delivery.{cliente}')
+            accesoc = cliente.replace('cliente', 'accesoc')
+            self._validar_punto(data['delivery'], accesoc, f'delivery.{accesoc}')
         self._validar_punto(data['delivery'], 'acceso', 'delivery.acceso')
 
         for area in _PICKUP_AREAS:
@@ -908,6 +916,16 @@ class MissionManagerNode(Node):
             raise RuntimeError(f"QR decodificado a '{cliente}' pero no existe en delivery del .yaml")
         return 'delivery', cliente
 
+    def _resolver_acceso_cliente(self, cliente: str) -> tuple[str, str]:
+        """Mapea el cliente a su punto de pre-alineación delivery.accesoc{N}
+        (mismo N que clienteN) — ahí el robot ya queda orientado para entrar
+        en línea recta a delivery[clienteN], evitando que rrt_node trace una
+        curva de último momento dentro del pasillo angosto."""
+        accesoc = cliente.replace('cliente', 'accesoc')
+        if accesoc not in self._waypoints['delivery']:
+            raise RuntimeError(f"falta 'delivery.{accesoc}' en waypoints.yaml para alinear hacia '{cliente}'")
+        return 'delivery', accesoc
+
     # ───────────────────────── Bucle principal de la FSM ─────────────────────
 
     def _loop(self):
@@ -989,6 +1007,17 @@ class MissionManagerNode(Node):
             self._poll_costmap_inflation()
             return
 
+        if st == MissionState.NAV_TO_DELIVERY_ALIGN:
+            try:
+                area_a, punto_a = self._resolver_acceso_cliente(self._cliente_actual)
+            except RuntimeError as e:
+                self.get_logger().error(f'{e} → abortando misión (QR mal leído o inesperado)')
+                self._state = MissionState.ABORTED
+                return
+            if self._ensure_nav_goal(area_a, punto_a):
+                self._state = MissionState.NAV_TO_DELIVERY
+            return
+
         if st == MissionState.NAV_TO_DELIVERY:
             try:
                 area_d, punto_d = self._resolver_delivery(self._cliente_actual)
@@ -1053,9 +1082,11 @@ class MissionManagerNode(Node):
         self._state = MissionState.SEND_DETECCION
 
     def _on_costmap_deflated(self):
-        """Costmap ya desinflado y asentado → ahora sí hay ruta hacia
-        delivery[cliente]."""
-        self._state = MissionState.NAV_TO_DELIVERY
+        """Costmap ya desinflado y asentado → ahora sí hay ruta hacia la
+        zona de clientes; primero pasa por delivery.accesoc{N} para quedar
+        pre-alineado y entrar derecho a delivery[cliente] (ver
+        NAV_TO_DELIVERY_ALIGN / _resolver_acceso_cliente)."""
+        self._state = MissionState.NAV_TO_DELIVERY_ALIGN
 
     def _on_costmap_inflated(self):
         """Costmap restaurado a su inflado normal, robot de vuelta en
