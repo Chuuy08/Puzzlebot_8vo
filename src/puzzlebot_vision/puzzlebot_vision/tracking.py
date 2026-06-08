@@ -68,13 +68,28 @@ class PoseNode(Node):
 
         # ---- Variables del Control de Estados ----
         # "ALIGN", "FORWARD", "FINISHED"
-        self.state = "ALIGN" 
         self.alignment_threshold = 0.1 # Umbral de tolerancia de error (ajustable)
         self.target_distance = 0.48      # 40 centímetros en metros
-        self.start_x = 0.0
-        self.start_y = 0.0
 
-        self.publisher = self.create_publisher(CompressedImage, '/annotated_yolo/compressed', 10)        
+        # mission_manager_node reusa este nodo para las 4 áreas de pickup
+        # (rodillos/rack1/rack2/rack3). Sin reiniciar self.state, tras la
+        # primera llegada exitosa (state='FINISHED') las siguientes 3
+        # reportarían "FINISHED" fantasma de inmediato sin moverse -- mismo
+        # bug que align_and_approach._reset_phase_state ya resuelve para su
+        # propio nodo. Se reutiliza el mismo topic/contrato de reset
+        # (mission_manager publica en /align_and_approach/reset justo antes
+        # de cada SEND_DETECCION) para que ambos nodos sean intercambiables
+        # sin que mission_manager tenga que saber cuál está corriendo.
+        self._reset_state()
+
+        self.reset_subscription = self.create_subscription(
+            Bool,
+            '/align_and_approach/reset',
+            self._reset_callback,
+            10
+        )
+
+        self.publisher = self.create_publisher(CompressedImage, '/annotated_yolo/compressed', 10)
         self.al_pub = self.create_publisher(CompressedImage, '/align/compressed', 10)
         
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -90,7 +105,24 @@ class PoseNode(Node):
 
     def EncRCb(self, msg):
         self.wr_val_ = msg.data
-        
+
+    def _reset_state(self):
+        """(Re)inicializa la FSM de alineación/avance al valor de arranque
+        de un intento nuevo. Se llama una vez en __init__ y de nuevo cada
+        vez que llega /align_and_approach/reset (ver _reset_callback). Se
+        ancla start_x/start_y a la posición ACTUAL (no a 0,0): de lo
+        contrario, al reentrar a FORWARD para la 2a/3a/4a área,
+        distance_travelled se mediría desde el origen del mapa en vez de
+        desde donde arranca este nuevo intento de acercamiento."""
+        self.state = "ALIGN"
+        self.start_x = self.X_
+        self.start_y = self.Y_
+
+    def _reset_callback(self, msg):
+        self.get_logger().info(
+            'Reset recibido -> reiniciando estado para nuevo intento de aproximación')
+        self._reset_state()
+
     def decode(self, roi):
         try:
             from pyzbar.pyzbar import decode as zbar_decode
@@ -214,9 +246,20 @@ class PoseNode(Node):
                     self.publish_empty_frame(annotated_frame)
 
             elif self.state == "FORWARD":
-                alineacion_msg.data = True
+                # NO publicar True aquí: a este punto solo se completó el
+                # centrado angular inicial -- todavía faltan hasta 0.48m de
+                # avance real hacia el pallet (ver target_distance). Este
+                # mismo topic dispara EN PARALELO tanto a
+                # fpga_controller_node._cb_alineacion (manda CMD_ALINEADO ->
+                # arranca el movimiento mecánico REAL del montacargas) como a
+                # mission_manager._cb_alineacion (WAITING_ALIGNMENT ->
+                # WAITING_LOAD). Publicar True aquí cargaría el pallet ~0.48m
+                # antes de que el robot esté realmente posicionado debajo.
+                # Solo el estado FINISHED (llegada confirmada, ver abajo)
+                # debe reportar alineación completa.
+                alineacion_msg.data = False
                 det_msg.data = True
-                
+
                 # Compute distance travelled from the initial baseline coordinate
                 distance_travelled = math.sqrt((self.X_ - self.start_x)**2 + (self.Y_ - self.start_y)**2)
                 

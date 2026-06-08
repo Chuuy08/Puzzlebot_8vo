@@ -222,6 +222,15 @@ class MissionManagerNode(Node):
         self._align_on_done = None              # callable() invocado al terminar el giro
 
         self._fpga_wait_start = None            # Time: inicio de la espera calibrada de FPGA
+        # Time: inicio de WAITING_ALIGNMENT -- esa espera depende por
+        # completo de que align_and_approach publique /alineation/booleano
+        # == True (ver _cb_alineacion); ese topic NO tiene timeout propio,
+        # así que si align_and_approach se planta (p. ej. pierde el target
+        # y no logra recuperarse) la misión entera quedaría esperando aquí
+        # para siempre, en silencio. Reusa nav_timeout_s (mismo mecanismo
+        # que _goal_start_time/_reverse_start_time) solo para que ese
+        # atorón sea visible y aborte -- no para reintentar/buscar de nuevo.
+        self._align_wait_start = None
 
         # ---- Maniobra de reversa (regreso a delivery.acceso) ----
         # ver _start_reverse_to_acceso/_do_reverse_to_acceso
@@ -300,8 +309,14 @@ class MissionManagerNode(Node):
         # align_and_approach reutiliza un único nodo para las 4 áreas de
         # pickup y mantiene estado de fases entre ellas a propósito (ver
         # _reset_phase_state allá) -- este topic le avisa "nuevo intento,
-        # olvida lo anterior" justo antes de cada SEND_DETECCION.
-        self._align_reset_pub = self.create_publisher(Empty, '/align_and_approach/reset', 10)
+        # olvida lo anterior" justo antes de cada SEND_DETECCION. Bool en
+        # vez de Empty: el booleano lleva la confirmación "ya demostramos
+        # en el barrido (_evaluate_sweep_stop) que este pallet tiene QR
+        # legible" -- así align_and_approach arranca el intento ya con
+        # _target_locked=True, sin tener que re-derivar esa misma certeza
+        # cuadro a cuadro, en movimiento y de lejos (ver _reset_phase_state
+        # allá para el porqué eso es justo lo que lo hacía plantarse).
+        self._align_reset_pub = self.create_publisher(Bool, '/align_and_approach/reset', 10)
 
         # Clientes de servicio hacia costmap_node y dwa_node — para
         # desinflar/inflar la zona de entrega y reducir/restaurar el margen
@@ -995,18 +1010,35 @@ class MissionManagerNode(Node):
             # intento, tras la primera llegada exitosa reportaría "ARRIVED"
             # fantasma de inmediato en las siguientes 3, sin moverse. Este
             # reset SIEMPRE precede al próximo intento de alineación, sea la
-            # primera área o la cuarta.
-            self._align_reset_pub.publish(Empty())
+            # primera área o la cuarta. data=True: el barrido que nos trajo
+            # aquí (_evaluate_sweep_stop) ya validó pallet+QR consistente --
+            # se lo confirmamos a align_and_approach para que arranque
+            # LOCKED y no tenga que volver a probarlo por su cuenta.
+            self._align_reset_pub.publish(Bool(data=True))
             # align_and_approach/tracking publican directo a /cmd_vel (no pasan
             # por dwa_node) durante la alineación fina — avisamos para que
             # dwa_node ceda el control y no compitan por /cmd_vel al mismo
             # tiempo (mismo patrón que el barrido / ALIGN_TO_YAW). Se apaga en
             # _cb_alineacion al confirmarse la alineación.
             self._publish_external_cmd_active(True)
+            self._align_wait_start = self.get_clock().now()
             self._state = MissionState.WAITING_ALIGNMENT
             return
 
         if st == MissionState.WAITING_ALIGNMENT:
+            # No es un retry/timeout-para-volver-a-buscar (eso ya se evaluó
+            # y se descartó por complejidad innecesaria para este despliegue
+            # de un solo target en pasillo angosto) -- es solo una red para
+            # que un atorón de align_and_approach (que hoy no tiene forma de
+            # avisar "me quedé sin recuperación") aborte la misión de forma
+            # visible en vez de colgarla en silencio para siempre.
+            if self._elapsed_s(self._align_wait_start) > self._nav_timeout:
+                self.get_logger().error(
+                    'WAITING_ALIGNMENT excedió nav_timeout_s sin recibir '
+                    '/alineation/booleano == True -> align_and_approach probablemente '
+                    'se quedó sin recuperación; abortando misión')
+                self._publish_external_cmd_active(False)
+                self._state = MissionState.ABORTED
             return  # avanza por _cb_alineacion
 
         if st == MissionState.WAITING_LOAD:

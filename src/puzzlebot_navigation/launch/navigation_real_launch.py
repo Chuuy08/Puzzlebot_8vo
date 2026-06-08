@@ -24,7 +24,7 @@ def generate_launch_description():
         description='false para robot real, true para simulación')
 
     inflation_radius_arg = DeclareLaunchArgument(
-        'inflation_radius', default_value='0.18',
+        'inflation_radius', default_value='0.21',
         description='Radio de inflado estático del costmap [m]')
 
     robot_radius_arg = DeclareLaunchArgument(

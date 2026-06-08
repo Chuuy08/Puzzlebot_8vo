@@ -16,20 +16,6 @@ IMPORTANTE — solo UN nodo de visión a la vez: este launch usa `align_and_appr
 (el que tiene los fixes de alineación más recientes). NO corras también `tracking`
 en paralelo — ambos publican a los MISMOS tópicos de control (/cmd_vel,
 /alineation/booleano, /pallet_detected, ...) y competirían entre sí.
-
-Orden y por qué (ver TimerAction más abajo, retrasos puestos a ojo —
-ajústalos si ves que algo arranca antes de que su dependencia esté lista):
-  1. MCL real primero (t=0s) — activa map_server (nodo lifecycle) y empieza a
-     publicar /mcl_pose y /mcl_wandering; todo lo demás depende de la
-     localización.
-  2. align_and_approach (t=0s, EN PARALELO con MCL) — cargar el modelo YOLO
-     toma varios segundos; arrancarlo ya para que esté listo cuando la misión
-     llegue a la fase de alineación, sin bloquear lo demás.
-  3. Navegación real (t≈6s: costmap/rrt/path_follower/dwa) — necesita mapa y
-     pose ya disponibles (costmap se suscribe al mapa, dwa_node necesita pose)
-     para no quedarse plantado/abortar en su primer ciclo.
-  4. mission_manager (t≈15s) — al arrancar empieza de inmediato a evaluar
-     /mcl_wandering y a orquestar todo lo demás, así que debe ser lo último.
 """
 
 import os
