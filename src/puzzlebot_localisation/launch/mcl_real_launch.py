@@ -162,8 +162,8 @@ def generate_launch_description():
             'wander_angular_speed':  0.40,
             'obstacle_distance':     0.40,
             'random_turn_interval':   5.0,
-            'convergence_hold_time':  5.0,
-            'min_conv_travel_m':      0.20,
+            'convergence_hold_time':  2.0,
+            'min_conv_travel_m':      0.05,
             'min_conv_rotation_deg':  90.0,
             'front_half_angle_deg':   60.0,
         }]

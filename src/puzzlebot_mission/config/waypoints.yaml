@@ -54,6 +54,12 @@ rodillos:
   p4:
     position: {x: -0.824, y: -0.694}
     orientation: {w: 0.0346, z: -0.9994}
+  generalp12:
+    position: {x: -0.647, y: -1.771}
+    orientation: {w: 0.2236, z: -0.9747}
+  general34:
+    position: {x: -0.622, y: -0.829}
+    orientation: {w: 0.1679, z: -0.9858}
 rack1:
   general:
     position: {x: 0.698, y: -1.956}

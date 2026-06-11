@@ -104,6 +104,16 @@ class AlignAndApproach(Node):
         # Red de seguridad temporal si /odom no llega o el robot se atasca.
         self.BLIND_APPROACH_TIMEOUT = (self.BLIND_APPROACH_DISTANCE / self.BLIND_APPROACH_LINEAR) * 2.5
 
+        # Red de seguridad: si ya está alineado (error_x dentro de umbral) pero
+        # near_commit (área/borde) nunca se cumple -- o si tras alinearse se
+        # pierde el target sin haber llegado a near_commit -- el robot se
+        # quedaría congelado para siempre sin publicar ARRIVED. Para entonces
+        # los forks ya están arriba (SEND_DETECCION ya se mandó), así que tras
+        # este tiempo se fuerza el tramo final ciego de todos modos: es más
+        # seguro que abortar la misión por WAITING_ALIGNMENT con los forks
+        # levantados.
+        self.STUCK_NEAR_TIMEOUT = 4.0  # s
+
         # Fases de _approach_phase: 'VISION' -> 'BLIND' (odometría) -> 'DONE'
         # (publica /alineation/booleano=True). BLIND/DONE tienen prioridad
         # absoluta -- la visión deja de decidir nada. (init en _reset_phase_state)
@@ -137,7 +147,27 @@ class AlignAndApproach(Node):
             10
         )
 
+        # Activo SOLO durante la aproximación final (mission_manager lo pone
+        # en True justo antes de SEND_DETECCION y en False al confirmar
+        # /alineation/booleano). Mientras está en False (barrido, navegación,
+        # etc.) la percepción (YOLO + decode QR + /pallet_detected,
+        # /pallet_has_qr, /pallet_qr_content) sigue corriendo -- el barrido
+        # de mission_manager depende de ella -- pero la máquina de fases de
+        # alineación/aproximación NO avanza y este nodo NO publica /cmd_vel,
+        # para no competir con los giros del barrido (eso hacía que el
+        # robot se pasara del pallet correcto antes de poder muestrearlo).
+        self._active = False
+        self.create_subscription(
+            Bool, '/align_and_approach/active', self._active_callback, 10)
+
         self.get_logger().info('Align-then-approach tracking started')
+
+    def _active_callback(self, msg: Bool):
+        if self._active and not msg.data:
+            # Cede /cmd_vel: publica un Twist() para no dejar el último
+            # comando "pegado" si justo en este instante no era cero.
+            self.vel_pub.publish(Twist())
+        self._active = msg.data
 
     def _reset_phase_state(self, target_confirmed: bool = False):
         """Reinicia el estado de fases para un nuevo intento de aproximación.
@@ -156,9 +186,11 @@ class AlignAndApproach(Node):
 
         self._target_locked = bool(target_confirmed)
         self._lost_since = None
+        self._locked_center = None  # (cx, cy) del último target bloqueado, ver find_target
 
         self._commit_streak = 0           # frames consecutivos en zona de compromiso
         self._last_good_near_commit = False  # si la última detección antes de perderse ya estaba ahí
+        self._near_aligned_since = None   # timestamp desde que error_x entró al umbral, ver STUCK_NEAR_TIMEOUT
 
     def _reset_callback(self, msg: Bool):
         self.get_logger().info(
@@ -206,7 +238,10 @@ class AlignAndApproach(Node):
     def find_target(self, results, h, w):
         """Prioridad PALLET: pallet+QR emparejados -> objetivo=pallet (bbox
         más estable); solo QR -> fallback=QR; solo pallet ya con _target_locked
-        -> fallback=pallet (el QR suele salir del FOV primero al acercarse).
+        -> fallback=pallet MÁS CERCANO a _locked_center (el QR suele salir
+        del FOV primero al acercarse, y puede haber otros pallets sin QR en
+        cuadro -- sin esto, el robot podía saltar a cualquiera de ellos e
+        ignorar el que ya había identificado por QR).
         Retorna (target_box, qr_box, paired) o (None, None, False)."""
         boxes_pallet, boxes_qr = [], []
         for box in results[0].boxes:
@@ -231,6 +266,13 @@ class AlignAndApproach(Node):
         if boxes_qr:
             return boxes_qr[0], boxes_qr[0], False
         if boxes_pallet and self._target_locked:
+            if self._locked_center is not None and len(boxes_pallet) > 1:
+                lcx, lcy = self._locked_center
+                def dist2(p):
+                    cx = (p[0] + p[2]) / 2.0
+                    cy = (p[1] + p[3]) / 2.0
+                    return (cx - lcx) ** 2 + (cy - lcy) ** 2
+                return min(boxes_pallet, key=dist2), None, False
             return boxes_pallet[0], None, False
         return None, None, False
 
@@ -249,12 +291,45 @@ class AlignAndApproach(Node):
             align_frame = annotated_frame.copy()
             cv2.line(align_frame, (w_center, 0), (w_center, h), (0, 255, 0), 2)
 
-            twist_msg = Twist()
-            now = self.get_clock().now()
             target_box, qr_box, paired = self.find_target(results, h, w)
-
             detected = target_box is not None
             qr_text = None
+
+            if paired:
+                # Pallet+QR emparejados por geometría -> ya sabemos que tiene
+                # QR sin necesidad de decodificarlo (más robusto que
+                # pyzbar/cv2, que exigen buena resolución/foco/ángulo).
+                if not self._target_locked:
+                    self.get_logger().info(
+                        'Target LOCKED (pallet+QR emparejados por geometría)')
+                self._target_locked = True
+
+            if qr_box is not None:
+                qxmin, qymin, qxmax, qymax = qr_box
+                if qymax > qymin and qxmax > qxmin:
+                    qr_text = self.decode(cv_image[qymin:qymax, qxmin:qxmax])
+                    if qr_text is not None:
+                        self.get_logger().info(f'QR: {qr_text}')
+                        self._target_locked = True
+
+            # Percepción: estos topics los consume mission_manager durante el
+            # barrido (con self._active=False) para decidir a qué pN ir, así
+            # que se publican SIEMPRE, sin importar self._active.
+            self.det_pub.publish(Bool(data=detected))
+            self.qr_flag_pub.publish(Bool(data=qr_text is not None))
+            if qr_text is not None:
+                self.qr_content_pub.publish(String(data=qr_text))
+
+            if not self._active:
+                # Fuera de la aproximación final (barrido, navegación, etc.):
+                # no avanzar la máquina de fases ni tocar /cmd_vel -- ver
+                # _active_callback / comentario en __init__.
+                self.alineacion_pub.publish(Bool(data=False))
+                self.publish(annotated_frame, align_frame)
+                return
+
+            twist_msg = Twist()
+            now = self.get_clock().now()
             state = 'SEARCHING'
 
             if self._approach_phase == 'BLIND':
@@ -289,26 +364,12 @@ class AlignAndApproach(Node):
                 xmin, ymin, xmax, ymax = target_box
                 self._lost_since = None
 
-                if paired:
-                    # Pallet+QR emparejados por geometría -> ya sabemos que
-                    # tiene QR sin necesidad de decodificarlo (más robusto
-                    # que pyzbar/cv2, que exigen buena resolución/foco/ángulo).
-                    if not self._target_locked:
-                        self.get_logger().info(
-                            'Target LOCKED (pallet+QR emparejados por geometría)')
-                    self._target_locked = True
-
-                if qr_box is not None:
-                    qxmin, qymin, qxmax, qymax = qr_box
-                    if qymax > qymin and qxmax > qxmin:
-                        qr_text = self.decode(cv_image[qymin:qymax, qxmin:qxmax])
-                        if qr_text is not None:
-                            self.get_logger().info(f'QR: {qr_text}')
-                            self._target_locked = True
-
                 center_x = (xmin + xmax) // 2
                 center_y = (ymin + ymax) // 2
                 cv2.circle(align_frame, (center_x, center_y), 8, (0, 0, 255), -1)
+
+                if self._target_locked:
+                    self._locked_center = (center_x, center_y)
 
                 error_x = float(w_center - center_x) / (w / 2.0)
                 area_ratio = float((xmax - xmin) * (ymax - ymin)) / float(w * h)
@@ -338,6 +399,9 @@ class AlignAndApproach(Node):
                         self._align_phase = 'MEASURE'
 
                 elif abs(error_x) > self.ALIGN_ERROR_THRESHOLD:
+                    # Todavía corrigiendo -> aún no se considera "alineado"
+                    self._near_aligned_since = None
+
                     # Signo invertido respecto a la última ráfaga -> overshoot, amortigua
                     new_sign = 1.0 if error_x > 0 else -1.0
                     if self._align_pulse_sign != 0.0 and new_sign != self._align_pulse_sign:
@@ -365,11 +429,23 @@ class AlignAndApproach(Node):
                     self._last_good_near_commit = near_commit
                     self._commit_streak = (self._commit_streak + 1) if near_commit else 0
 
+                    if self._near_aligned_since is None:
+                        self._near_aligned_since = now
+                    stuck_for = (now - self._near_aligned_since).nanoseconds / 1e9
+
                     if self._commit_streak >= self.COMMIT_STABILITY_FRAMES:
                         self._enter_blind(now)
                         state = 'APPROACHING (commit confirmado -> tramo final ciego por odometría)'
                         twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
                         twist_msg.angular.z = 0.0
+
+                    elif stuck_for >= self.STUCK_NEAR_TIMEOUT:
+                        self._enter_blind(now)
+                        state = (f'APPROACHING (alineado hace {stuck_for:.1f}s sin confirmar commit '
+                                 '-> forzando tramo final ciego)')
+                        twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
+                        twist_msg.angular.z = 0.0
+                        self.get_logger().warn(state)
 
                     else:
                         # Control P por área/centrado; TARGET_AREA_RATIO solo
@@ -422,6 +498,18 @@ class AlignAndApproach(Node):
                         cv2.putText(align_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.7, (0, 165, 255), 2)
                         self.get_logger().warn(f'{state} -> linear={twist_msg.linear.x:.3f}')
+                    elif (self._near_aligned_since is not None
+                          and (now - self._near_aligned_since).nanoseconds / 1e9 >= self.STUCK_NEAR_TIMEOUT):
+                        # Ya estaba alineado antes de perderse y lleva
+                        # STUCK_NEAR_TIMEOUT sin recuperar visión ni confirmar
+                        # commit -> forzar tramo final ciego (ver STUCK_NEAR_TIMEOUT).
+                        self._enter_blind(now)
+                        state = 'APPROACHING (perdido tras alinear, timeout -> tramo final ciego)'
+                        twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
+                        twist_msg.angular.z = 0.0
+                        cv2.putText(align_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7, (0, 165, 255), 2)
+                        self.get_logger().warn(state)
                     else:
                         # Lejos del punto de compromiso: sin LiDAR no se sabe
                         # cuánto falta, mejor pausar y esperar a recuperar visión
@@ -441,10 +529,6 @@ class AlignAndApproach(Node):
                     cv2.putText(align_frame, state, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.7, (0, 0, 255), 2)
 
-            self.det_pub.publish(Bool(data=detected))
-            self.qr_flag_pub.publish(Bool(data=qr_text is not None))
-            if qr_text is not None:
-                self.qr_content_pub.publish(String(data=qr_text))
             self.alineacion_pub.publish(Bool(data=(state == 'ARRIVED')))
 
             self.vel_pub.publish(twist_msg)
