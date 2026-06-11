@@ -140,11 +140,8 @@ class PathFollowerNode(Node):
             self._do_drive(lx, ly, err, dist_goal)
 
     def _do_align(self, err: float):
-        """
-        Rota en el lugar hacia el lookahead.
-        Proporcional al error con saturación.
-        Sale a DRIVE cuando error < drive_threshold.
-        """
+        """Rota en el lugar hacia el lookahead (P con saturación); pasa a
+        DRIVE cuando error < drive_threshold."""
         if abs(err) < self._drive_th:
             self._state = _DRIVE
             self.get_logger().info(
@@ -159,11 +156,8 @@ class PathFollowerNode(Node):
         self._pub.publish(t)
 
     def _do_drive(self, lx: float, ly: float, err: float, dist_goal: float):
-        """
-        Pure Pursuit.
-        Si el error de rumbo supera align_threshold → vuelve a ALIGN.
-        Velocidad adaptativa: se reduce cuanto más cerrada es la curva.
-        """
+        """Pure Pursuit con velocidad adaptativa; vuelve a ALIGN si el error
+        de rumbo supera align_threshold."""
         if abs(err) > self._align_th:
             self._state = _ALIGN
             self.get_logger().info(
@@ -199,20 +193,13 @@ class PathFollowerNode(Node):
         self._pub.publish(t)
 
     def _lookahead(self) -> tuple[float, float]:
-        """
-        Recorre los segmentos del path a partir del segmento activo,
-        avanza L metros desde la proyección del robot en el path y
-        devuelve el punto resultante.
-
-        Esto hace que el robot siga la LÍNEA del path y no salte de
-        waypoint en waypoint.
-        """
+        """Avanza L metros desde la proyección del robot en el path activo
+        (sigue la LÍNEA, no salta de waypoint en waypoint)."""
         wp = self._wp
         n  = len(wp)
 
-        # Si el robot se desvió mucho del path (DWA lo empujó fuera),
-        # buscar el segmento más cercano en TODO el path y resetear seg_idx.
-        # Evita que el lookahead apunte "hacia atrás" o a un segmento lejano.
+        # Si se desvió mucho del path (DWA lo empujó fuera), buscar el
+        # segmento más cercano en TODO el path y resetear seg_idx.
         if n > 1 and self._seg_idx < n - 1:
             dist_to_current = math.hypot(
                 wp[self._seg_idx][0] - self._rx,
@@ -272,11 +259,7 @@ class PathFollowerNode(Node):
         return wp[-1]
 
     def _check_stuck(self):
-        """
-        Detecta si el robot lleva más de stuck_time segundos sin avanzar
-        stuck_dist metros. Si es así, re-publica el mismo goal al RRT
-        para que replantee la ruta.
-        """
+        """Si lleva > stuck_time sin avanzar stuck_dist, re-publica el goal para replantear."""
         if self._state in (_IDLE, _DONE) or self._last_prog_time is None:
             return
 

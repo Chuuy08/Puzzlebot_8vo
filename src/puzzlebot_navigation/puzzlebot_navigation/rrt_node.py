@@ -174,19 +174,9 @@ class RRTNode(Node):
 
     def _birrt(self, start: np.ndarray, goal: np.ndarray,
                grid: np.ndarray):
-        """
-        RRT Bidireccional.
-
-        Mantiene dos árboles: A (desde start) y B (desde goal).
-        En cada iteración:
-          1. Extiende árbol A hacia un punto aleatorio.
-          2. Intenta conectar árbol B al nuevo nodo.
-          3. Si la conexión es libre → path encontrado.
-          4. Intercambia A y B para la siguiente iteración.
-
-        Retorna lista de np.array([x, y]) desde start hasta goal,
-        o None si no encontró path en max_iterations.
-        """
+        """RRT Bidireccional: dos árboles (A desde start, B desde goal) que se
+        extienden e intercambian cada iteración hasta conectar.
+        Retorna lista de np.array([x, y]) start->goal, o None si no converge."""
         nodes_a = [start.copy()];  par_a = [-1]
         nodes_b = [goal.copy()];   par_b = [-1]
         a_es_start = True   # para saber cómo ordenar el path al final
@@ -256,11 +246,9 @@ class RRTNode(Node):
 
     def _snap_to_free(self, pt: np.ndarray, grid: np.ndarray,
                       max_radius_m: float = 0.30) -> 'np.ndarray | None':
-        """
-        Si pt cae en celda inflada (99), devuelve la celda libre más cercana
-        dentro de max_radius_m.  Si cae en obstáculo sólido (100) o fuera del
-        mapa, devuelve None.
-        """
+        """Si pt cae en celda inflada (99), devuelve la celda libre más
+        cercana dentro de max_radius_m; si es obstáculo sólido o está fuera
+        del mapa, devuelve None."""
         r0, c0 = self._w2c(float(pt[0]), float(pt[1]))
         if not (0 <= r0 < self._map_H and 0 <= c0 < self._map_W):
             return None
@@ -295,10 +283,7 @@ class RRTNode(Node):
 
     def _seg_free(self, p1: np.ndarray, p2: np.ndarray,
                   grid: np.ndarray) -> bool:
-        """
-        True si el segmento p1→p2 está libre de obstáculos.
-        Muestrea a intervalos de map_res metros para no perder paredes finas.
-        """
+        """True si el segmento p1->p2 está libre (muestrea cada map_res metros)."""
         dist = float(np.linalg.norm(p2 - p1))
         if dist < 1e-6:
             return True
@@ -330,11 +315,8 @@ class RRTNode(Node):
         return path[::-1]
 
     def _smooth_path(self, path: list, grid: np.ndarray) -> list:
-        """
-        Suavizado por atajos (greedy shortcutting):
-        intenta conectar directamente waypoints no adyacentes,
-        eliminando rodeos innecesarios del árbol RRT.
-        """
+        """Suavizado por atajos (greedy shortcutting): conecta waypoints no
+        adyacentes directamente para eliminar rodeos del RRT."""
         if len(path) <= 2:
             return path
 

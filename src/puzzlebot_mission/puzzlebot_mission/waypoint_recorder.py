@@ -43,9 +43,7 @@ def _yaw_to_quat_wz(yaw: float) -> tuple[float, float]:
 
 
 class _FlowMap(dict):
-    """Marca un dict para que PyYAML lo serialice en estilo inline
-    {x: 0.0, y: 0.0} en vez de bloque — así el .yaml reescrito conserva
-    el mismo formato que el original."""
+    """Marca un dict para serializarlo en estilo inline {x: 0.0, y: 0.0}."""
     pass
 
 
@@ -57,10 +55,8 @@ yaml.add_representer(_FlowMap, _represent_flow_map, Dumper=yaml.SafeDumper)
 
 
 def _flowify(data: dict) -> dict:
-    """Recorre area -> punto -> {position, orientation} y envuelve esos dos
-    sub-dicts en _FlowMap, sin importar si vienen de yaml.safe_load (dict
-    plano) o de una entrada recién grabada — para que TODO el archivo salga
-    con el mismo estilo inline al reescribirlo completo."""
+    """Envuelve position/orientation de cada waypoint en _FlowMap para
+    reescribir todo el archivo en estilo inline."""
     out = {}
     for area, puntos in data.items():
         out[area] = {}
@@ -73,10 +69,7 @@ def _flowify(data: dict) -> dict:
 
 
 def _read_header(path: str) -> str:
-    """Conserva el bloque de comentarios inicial del .yaml original.
-    (yaml.safe_dump no preserva comentarios ni el estilo inline {x:..} —
-    perdemos ese formato al reescribir, pero el encabezado explicativo
-    sigue documentando el archivo)."""
+    """Conserva el bloque de comentarios inicial del .yaml (yaml.safe_dump no los preserva)."""
     lines = []
     try:
         with open(path, 'r') as f:

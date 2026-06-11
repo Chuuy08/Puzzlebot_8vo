@@ -384,10 +384,9 @@ def final_report(info: dict, precision: dict, speed: dict) -> None:
     if onnx_fps:
         print(f"  ONNX (laptop)     : {onnx_fps:.1f} FPS")
 
-    # Jetson Nano estimates (Nano has ~50–60 TOPS INT8 via TRT; CUDA is ~5x slower than desktop)
-    # Conservative: laptop CPU ≈ Jetson CPU×2; Jetson CUDA+TRT ≈ laptop CPU×1.5
+    # Estimaciones conservadoras Jetson Nano (CPU≈laptop CPU/2, TRT INT8≈CPU×1.8)
     jetson_cpu_est = cpu_fps * 0.5
-    jetson_trt_est = cpu_fps * 1.8   # TensorRT INT8 gives big boost on Nano
+    jetson_trt_est = cpu_fps * 1.8
 
     print(f"\n  Estimaciones Jetson Nano:")
     print(f"    CPU puro          : ~{jetson_cpu_est:.1f} FPS")

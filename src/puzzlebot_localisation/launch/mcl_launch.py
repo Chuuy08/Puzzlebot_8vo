@@ -3,7 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node, LifecycleNode
 
 
@@ -13,14 +13,16 @@ def generate_launch_description():
     gazebo_pkg = get_package_share_directory('puzzlebot_gazebo')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    map_yaml     = os.path.join(loc_pkg, 'maps', 'map_1779562705.yaml')
+    world        = LaunchConfiguration('world')
+    map_yaml_arg = LaunchConfiguration('map')
+    map_yaml     = PathJoinSubstitution([loc_pkg, 'maps', map_yaml_arg])
 
-    # ── 1. Gazebo — track world ───────────────────────────────────────────
+    # ── 1. Gazebo — world ──────────────────────────────────────────────────
 
     gazebo_world = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_pkg, 'launch', 'gazebo_world_launch.py')),
-        launch_arguments={'world': 'track_world.sdf', 'pause': 'false'}.items()
+        launch_arguments={'world': world, 'pause': 'false'}.items()
     )
 
     # Spawn inside the mapped area of track_world.sdf.
@@ -145,16 +147,24 @@ def generate_launch_description():
     ld_lib = os.environ.get('LD_LIBRARY_PATH', '')
     ld_lib_clean = ':'.join(p for p in ld_lib.split(':') if 'snap' not in p)
 
+    rviz_config = os.path.join(loc_pkg, 'rviz', 'mcl.rviz')
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
+        arguments=['-d', rviz_config],
+        parameters=[{'use_sim_time': use_sim_time}],
         additional_env={'LD_LIBRARY_PATH': ld_lib_clean},
     )
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('world', default_value='track_world.sdf',
+                               description='Gazebo world file (in puzzlebot_gazebo/worlds)'),
+        DeclareLaunchArgument('map', default_value='map_1779562705.yaml',
+                               description='Map YAML file (in puzzlebot_localisation/maps)'),
 
         gazebo_world,
         spawn_robot,

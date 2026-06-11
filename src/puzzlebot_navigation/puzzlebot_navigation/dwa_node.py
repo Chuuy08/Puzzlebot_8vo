@@ -114,15 +114,8 @@ class DWANode(Node):
         self._external_active = msg.data
 
     def _on_set_parameters(self, params):
-        """Permite cambiar 'robot_radius' en caliente — por defecto se lee
-        una sola vez en __init__ y queda congelado. self._r_robot se usa
-        directo en cada ciclo de _loop (_proximity_brake/_clearance/_recovery),
-        así que el cambio queda activo desde el siguiente ciclo, sin
-        recálculos. mission_manager lo reduce temporalmente al entrar a la
-        zona de entrega (pasillo angosto pegado a la pared, donde el valor
-        normal hace que el robot frene a 0 y oscile en _recovery sin decidirse
-        a entrar) y lo restaura al salir — junto con inflation_radius/
-        dynamic_inflation_radius de costmap_node."""
+        """Permite cambiar 'robot_radius' en caliente (mission_manager lo
+        reduce al entrar a la zona de entrega y lo restaura al salir)."""
         for p in params:
             if p.name == 'robot_radius':
                 self._r_robot = float(p.value)
@@ -181,10 +174,8 @@ class DWANode(Node):
             self._pub_stop()
             return
 
-        # ── Freno de emergencia: obstáculo pegado al robot ────────────────
-        # Si el freno de proximidad ya redujo la velocidad a 0 pero el
-        # path_follower sigue pidiendo avanzar → activar recuperación
-        # directamente sin pasar por el scoring.
+        # Freno de emergencia: si el freno de proximidad ya redujo la
+        # velocidad a 0 pero path_follower pide avanzar → recuperación directa
         if self._ref_v > 0.02:
             braked_check = self._proximity_brake(self._ref_v, self._scan_xy)
             if braked_check < 0.01:
@@ -197,10 +188,8 @@ class DWANode(Node):
                 self._pub.publish(t)
                 return
 
-        # ── Bypass para rotación en lugar (estado ALIGN del path_follower) ──
-        # Cuando path_follower gira en el lugar (v≈0, ω≠0), la trayectoria
-        # simulada no se desplaza: el robot no se acerca a ningún obstáculo.
-        # No tiene sentido que el DWA interfiera con estas rotaciones.
+        # Bypass: rotación en lugar (path_follower en ALIGN, v≈0) -- la
+        # trayectoria no avanza, el DWA no debe interferir.
         if abs(self._ref_v) < 0.02 and abs(self._ref_w) > 0.05:
             t = Twist()
             t.angular.z = float(self._ref_w)
@@ -266,12 +255,8 @@ class DWANode(Node):
         self._pub.publish(t)
 
     def _simulate(self, v: float, w: float):
-        """
-        Simula una trayectoria circular en el frame LOCAL del robot.
-        Retorna (traj_xy, final_th):
-          traj_xy : np.array (n_steps, 2) — puntos (x, y) en frame robot
-          final_th: float — ángulo final de la trayectoria
-        """
+        """Simula una trayectoria circular en frame LOCAL del robot.
+        Retorna (traj_xy (n_steps,2), final_th)."""
         t = self._t_arr  # (n_steps,)
         if abs(w) > 1e-4:
             x = (v / w) * np.sin(w * t)
@@ -284,14 +269,7 @@ class DWANode(Node):
 
     def _clearance(self, traj_xy: np.ndarray,
                    scan_xy: np.ndarray) -> float:
-        """
-        Distancia mínima entre cualquier punto de la trayectoria y
-        cualquier punto del scan (obstacle).
-
-        traj_xy : (n_steps, 2)
-        scan_xy : (N_scan, 2)
-        Retorna el escalar float min_dist.
-        """
+        """Distancia mínima entre la trayectoria y los puntos del scan."""
         if len(scan_xy) == 0:
             return float('inf')
 
@@ -301,10 +279,7 @@ class DWANode(Node):
         return float(dists.min())
 
     def _goal_heading_local(self) -> float:
-        """
-        Ángulo hacia el lookahead del path global en el frame LOCAL del robot.
-        Si no hay path, retorna 0 (seguir recto).
-        """
+        """Ángulo hacia el lookahead del path global en frame LOCAL (0 si no hay path)."""
         if not self._wp or not self._pose_ready:
             return 0.0
 
@@ -326,18 +301,9 @@ class DWANode(Node):
         return wrap_angle(heading_map - self._rth)
 
     def _proximity_brake(self, ref_v: float, scan_xy: np.ndarray) -> float:
-        """
-        Reduce la velocidad lineal proporcionalmente a la cercanía del
-        obstáculo más cercano en el cono frontal (±30°).
-
-        Distancias:
-          >= brake_dist (0.50m) → velocidad completa
-          <= robot_radius       → velocidad = 0
-          intermedio            → interpolación lineal
-
-        Esto hace que el robot llegue LENTO a los obstáculos en lugar de
-        avanzar a full speed y tener que oscilar para evitarlos.
-        """
+        """Reduce la velocidad lineal según cercanía del obstáculo más cercano
+        en el cono frontal: full speed >= brake_dist, 0 si <= robot_radius,
+        interpolación lineal entre ambos."""
         if len(scan_xy) == 0 or ref_v <= 0:
             return ref_v
 
@@ -365,22 +331,9 @@ class DWANode(Node):
         return braked
 
     def _recovery(self, scan_xy: np.ndarray) -> tuple[float, float]:
-        """
-        Cuando no hay trayectoria segura hacia adelante, decide la mejor
-        maniobra de escape mirando cuánto espacio hay a cada lado y atrás.
-
-        Lógica en frame LOCAL del robot (x=adelante, y=izquierda):
-          - Puntos scan con y > 0  → espacio lateral izquierdo
-          - Puntos scan con y < 0  → espacio lateral derecho
-          - Puntos scan con x < 0  → espacio detrás
-
-        Decisión:
-          1. Si hay más espacio a la izquierda  → girar izquierda (ω > 0)
-          2. Si hay más espacio a la derecha    → girar derecha  (ω < 0)
-          3. Si ambos lados bloqueados y hay    → reversa lenta
-             espacio detrás
-          4. Si todo está bloqueado             → stop (esperar re-plan)
-        """
+        """Sin trayectoria segura: gira hacia el lado con más espacio (frame
+        local x=adelante, y=izquierda); si ambos bloqueados, reversa si hay
+        espacio atrás; si no, stop y esperar re-plan."""
         if len(scan_xy) == 0:
             # Sin datos de scan: girar a la izquierda por defecto
             return 0.0, self._w_max * 0.5

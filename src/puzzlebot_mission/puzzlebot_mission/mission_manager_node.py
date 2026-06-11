@@ -2,33 +2,15 @@
 """
 mission_manager_node.py — Orquestador de misión autónoma del PuzzleBot.
 
-Secuencia: localización (MCL) → RODILLOS → RACK1..3 → fin de misión.
+Secuencia: localización (MCL) -> RODILLOS -> RACK1..3 -> fin de misión.
+Coordina vía topics: localización (/mcl_wandering), navegación (/goal_pose,
+/waypoint_reached, /cancel_navigation), visión (/pallet_detected,
+/pallet_has_qr, /pallet_qr_content, /alineation/booleano) y montacargas
+(/deteccion_pallet -- fpga_controller_node ya orquesta su propia secuencia).
 
-Coordina, vía los topics ya existentes en el sistema:
-  - Localización:  /mcl_wandering        (puzzlebot_localisation · active_localization_node)
-  - Navegación:    /goal_pose, /waypoint_reached, /cancel_navigation
-                   (puzzlebot_navigation · rrt_node + path_follower_node)
-  - Visión:        /pallet_detected, /pallet_has_qr, /pallet_qr_content,
-                   /alineation/booleano   (puzzlebot_vision · align_and_approach / tracking)
-  - Montacargas:   /deteccion_pallet      (puzzlebot_fpga_controller · fpga_controller_node,
-                   ya orquesta solo la secuencia de carga/descarga — el orquestador
-                   NO necesita publicar ningún comando de "liberación")
-
-NOTA — hueco de sincronización con la FPGA (mitigado, no resuelto de raíz):
-  fpga_controller_node no publica NADA hacia afuera (toda su comunicación es
-  por SPI), así que no hay forma de saber, desde ROS, el instante exacto en
-  que el montacargas terminó de (a) levantar el pallet tras la alineación, o
-  (b) depositarlo en el punto de entrega. Pero según el comportamiento real
-  observado, el robot NO necesita esperar la secuencia COMPLETA de la FPGA en
-  ninguno de los dos puntos — solo el movimiento mecánico breve de subir/
-  bajar (~2s) antes de seguir adelante; el resto de la secuencia de la FPGA
-  (delays, fase de visión al bajar, etc.) no requiere que el robot esté
-  detenido. Por eso `fpga_settle_time_s` (usado en WAITING_LOAD y
-  WAITING_UNLOAD) es una espera CORTA y fija de ~2s, no un cálculo sobre
-  T_ROD_*/T_RACK_* (esas constantes son internas a la FSM de la FPGA, no una
-  guía de cuánto debe esperar el robot). Si algún día agregan un publisher de
-  "listo" del lado de la Jetson, esta espera se podría reemplazar por una
-  señal real — pero no es necesario para que la misión funcione.
+NOTA: fpga_controller_node no publica nada hacia afuera (SPI), así que
+fpga_settle_time_s es una espera fija corta (~2s) que solo cubre el
+movimiento mecánico de subir/bajar, no la secuencia completa de la FPGA.
 """
 
 import math
@@ -61,51 +43,37 @@ class MissionState(Enum):
     WAITING_LOCALIZATION = auto()    # esperando /mcl_wandering: True -> False
 
     NAV_TO_AREA_GENERAL = auto()     # navegando al waypoint 'general' del área activa (tránsito)
-    NAV_TO_SWEEP_PHASE  = auto()     # navegando al waypoint de la fase de barrido activa
-                                     # (ver _SWEEP_PHASES; p.ej. rodillos.generalp12/general34)
-    ALIGN_TO_YAW        = auto()     # girando en el lugar hacia el yaw grabado del
-                                     # waypoint (la navegación no respeta orientación
-                                     # final — ver _start_align_to_yaw); se reutiliza
-                                     # tras llegar a 'general' y a 'p{N}'
+    NAV_TO_SWEEP_PHASE  = auto()     # navegando al waypoint de la fase de barrido (ver _SWEEP_PHASES)
+    ALIGN_TO_YAW        = auto()     # girando en el lugar al yaw grabado del waypoint
+                                     # (la navegación no respeta orientación final;
+                                     # se reutiliza tras llegar a 'general' y a 'p{N}')
     SWEEP_TURN_TO_STOP  = auto()     # girando hacia la siguiente parada del barrido
     SWEEP_SAMPLING      = auto()     # detenido, muestreando detección de pallet/QR
     SWEEP_EMPTY         = auto()     # ninguna parada tuvo pallet+QR -> decidir siguiente paso
 
-    # NAV_TO_PALLET puede pasar primero por DEFLATE_COSTMAP/INFLATE_COSTMAP
-    # (mecanismo genérico, ver _start_costmap_reduce/_restore más abajo):
-    # p{N} a veces cae DENTRO del costmap inflado (pegado a un rack) y
-    # rrt_node no encuentra ruta — se reduce solo inflation_radius/
-    # dynamic_inflation_radius (NO robot_radius, no es pasillo angosto).
+    # NAV_TO_PALLET puede pasar por DEFLATE/INFLATE_COSTMAP si p{N} cae
+    # dentro del costmap inflado (mecanismo genérico, ver _start_costmap_reduce/_restore).
     NAV_TO_PALLET     = auto()       # navegando al waypoint p{N} del pallet elegido
-    SEND_DETECCION    = auto()       # publicar /deteccion_pallet (solo tras llegar al pallet)
+    SEND_DETECCION    = auto()       # publicar /deteccion_pallet (tras llegar al pallet)
     WAITING_ALIGNMENT = auto()       # esperando /alineation/booleano == True
     WAITING_LOAD      = auto()       # espera calibrada: FPGA terminando de cargar
 
-    # Secuencia de entrega: la zona de clientes cae DENTRO del costmap inflado
-    # (está pegada a una pared, en un pasillo angosto) y rrt_node nunca
-    # encuentra ruta hacia ella, así que primero se llega a un punto de
-    # acceso fijo fuera de esa zona, se reducen EN CALIENTE (servicio
-    # set_parameters) inflation_radius/dynamic_inflation_radius de
-    # costmap_node Y robot_radius de dwa_node — ver _start_costmap_reduce —,
-    # se entra a depositar, y al volver al punto de acceso se restauran los
-    # tres a su valor normal con _start_costmap_restore antes de seguir.
-    #
-    # DEFLATE_COSTMAP/INFLATE_COSTMAP son GENÉRICOS: el mismo mecanismo
-    # también lo usa NAV_TO_PALLET (con otros valores objetivo y sin tocar
-    # robot_radius — ver _start_costmap_reduce/_poll_costmap_inflation).
-    NAV_TO_DELIVERY_ACCESO = auto() # navegando a delivery.acceso (punto fijo, fuera de la zona inflada)
-    DEFLATE_COSTMAP        = auto() # reduciendo inflation_radius/dynamic_inflation_radius (y a veces robot_radius) vía set_parameters
-    NAV_TO_DELIVERY_ALIGN  = auto() # navegando a delivery.accesoc{N} — punto de pre-alineación
-                                    # propio del cliente N: deja al robot ya orientado para entrar
-                                    # en línea recta a delivery[clienteN] (la navegación no respeta
-                                    # la orientación final del goal, igual que 'general'/'p{N}' —
-                                    # ver ALIGN_TO_YAW; aquí se resuelve con un waypoint intermedio
-                                    # en vez de un giro porque además hay que recorrer distancia)
-    NAV_TO_DELIVERY        = auto() # navegando al waypoint delivery[cliente], ya alineado desde accesoc{N}
+    # Secuencia de entrega: la zona de clientes está en un pasillo angosto
+    # dentro del costmap inflado, así que se llega a delivery.acceso, se
+    # reducen en caliente (set_parameters) inflation_radius/
+    # dynamic_inflation_radius de costmap_node y robot_radius de dwa_node
+    # (_start_costmap_reduce), se entra a depositar y al volver se restauran
+    # con _start_costmap_restore. DEFLATE/INFLATE_COSTMAP son genéricos:
+    # NAV_TO_PALLET reusa el mismo mecanismo sin tocar robot_radius.
+    NAV_TO_DELIVERY_ACCESO = auto() # navegando a delivery.acceso (punto fijo fuera de la zona inflada)
+    DEFLATE_COSTMAP        = auto() # reduciendo radios de inflación vía set_parameters
+    NAV_TO_DELIVERY_ALIGN  = auto() # navegando a delivery.accesoc{N}: pre-alinea hacia delivery[clienteN]
+                                    # (waypoint intermedio en vez de giro porque hay que recorrer distancia)
+    NAV_TO_DELIVERY        = auto() # navegando a delivery[cliente], ya alineado desde accesoc{N}
     WAITING_UNLOAD         = auto() # espera calibrada: FPGA terminando de depositar
-    REVERSE_TO_ACCESO      = auto() # retrocediendo en línea recta a delivery.acceso (sin girar:
-                                    # el montacargas queda justo enfrente y no hay espacio para voltearse)
-    INFLATE_COSTMAP        = auto() # restaurando inflation_radius/dynamic_inflation_radius (y robot_radius si aplica) a sus valores normales
+    REVERSE_TO_ACCESO      = auto() # retrocediendo en línea recta a delivery.acceso
+                                    # (montacargas justo enfrente, sin espacio para girar)
+    INFLATE_COSTMAP        = auto() # restaurando radios de inflación a sus valores normales
 
     MISSION_COMPLETE = auto()
     ABORTED          = auto()
@@ -123,22 +91,12 @@ _RELIABLE = QoSProfile(
 _PICKUP_AREAS = ['rodillos', 'rack1', 'rack2', 'rack3']
 _PALLETS_PER_AREA = {'rodillos': 4, 'rack1': 3, 'rack2': 3, 'rack3': 3}
 
-# Fases de barrido por área: cada fase es
-# (waypoint_de_referencia, (pN...), rango_deg_o_None).
-# El robot navega a 'general' (punto de tránsito), luego a la primera fase;
-# si su barrido no encuentra pallet+QR, navega a la siguiente fase, etc.
-# 'rodillos' tiene 4 pallets repartidos en 2 grupos (la separación física
-# es demasiado grande para un solo barrido de 4 paradas) -- generalp12
-# queda orientado hacia p1 y barre hacia p2; general34 queda orientado
-# hacia p3 y barre hacia p4. rack1..3 conservan el barrido único de antes
-# (fase = el propio 'general', cubre p1..p3).
-#
-# El 3er elemento (rango_deg) sobreescribe sweep_range_deg SOLO para esa
-# fase -- None usa el valor global. La pose inicial de cada fase (yaw
-# grabado en generalp12/general34/general) ya está bien ajustada; este
-# valor es para corregir HASTA DÓNDE gira el barrido de esa fase
-# (p.ej. si el barrido de general34 se pasa de p4, bájalo aquí en vez de
-# tocar sweep_range_deg global, que también afectaría a generalp12).
+# Fases de barrido por área: (waypoint_referencia, (pN...), rango_deg_o_None).
+# Navega a 'general', luego a la primera fase; si no encuentra pallet+QR,
+# pasa a la siguiente. 'rodillos' usa 2 fases (4 pallets en 2 grupos: p1/p2
+# y p3/p4); rack1..3 usan una sola fase ('general', cubre p1..p3).
+# rango_deg sobreescribe sweep_range_deg solo para esa fase (None = global,
+# para ajustar hasta dónde gira el barrido de esa fase específica).
 _SWEEP_PHASES = {
     'rodillos': [('generalp12', (1, 2), None), ('general34', (3, 4), None)],
     'rack1':    [('general', (1, 2, 3), None)],
@@ -146,12 +104,9 @@ _SWEEP_PHASES = {
     'rack3':    [('general', (1, 2, 3), None)],
 }
 
-# Si una fase de barrido termina SWEEP_EMPTY (ninguna parada tuvo mayoría
-# pallet_detected), antes de avanzar de fase/área se re-alinea al yaw
-# inicial de la MISMA fase y se repite el barrido hasta esta cantidad de
-# veces. Una ventana de muestreo con mala suerte en visión (oclusión
-# momentánea, parpadeo de YOLO) no debe costar abortar toda la misión
-# (rodillos) o saltarse una fase entera (racks) -- ver _handle_sweep_empty.
+# Si una fase de barrido termina SWEEP_EMPTY, se re-alinea al yaw inicial y
+# se repite hasta esta cantidad de veces antes de avanzar (mitiga oclusión/
+# parpadeo de YOLO; ver _handle_sweep_empty).
 _MAX_SWEEP_RETRIES = 1
 
 # Marca leída del QR del pallet -> cliente de entrega (clave en
@@ -177,41 +132,31 @@ class MissionManagerNode(Node):
         self.declare_parameter('nav_timeout_s', 90.0)
         self.declare_parameter('fpga_settle_time_s', 5.0)
         self.declare_parameter('delivery_inflation_radius', 0.07)
-        # robot_radius es el radio FÍSICO del robot + margen mínimo — a
-        # diferencia de delivery_inflation_radius (que es solo margen de
-        # planeación), bajarlo de más sí puede causar choques reales. Debe
-        # quedar apenas por debajo del robot_radius normal de dwa_node
-        # (0.18 en sim / 0.13 en el robot real — ver navigation_*_launch.py),
-        # nunca por debajo del radio físico real del PuzzleBot.
+        # robot_radius FÍSICO + margen mínimo: a diferencia de
+        # delivery_inflation_radius, bajarlo de más puede causar choques
+        # reales. Debe quedar justo debajo del robot_radius normal de
+        # dwa_node (0.18 sim / 0.13 real, ver navigation_*_launch.py).
         self.declare_parameter('delivery_robot_radius', 0.5)
         self.declare_parameter('costmap_settle_time_s', 1.0)
-        # El pasillo de entrega es angosto y tiene el montacargas justo
-        # enfrente del robot al llegar — no hay espacio para girar 180°, así
-        # que el regreso a delivery.acceso se hace EN REVERSA, en línea recta
-        # (ver _start_reverse_to_acceso). reverse_speed va por debajo de
-        # linear_speed de path_follower porque no hay sensado de obstáculos
-        # hacia atrás (el LiDAR ve hacia adelante).
+        # Pasillo de entrega angosto con el montacargas justo enfrente: sin
+        # espacio para girar 180°, el regreso a delivery.acceso es EN
+        # REVERSA en línea recta (_start_reverse_to_acceso). reverse_speed <
+        # linear_speed porque el LiDAR no ve hacia atrás.
         self.declare_parameter('reverse_speed', 0.10)            # [m/s], magnitud (se aplica negativo)
         self.declare_parameter('reverse_goal_tolerance', 0.15)   # [m]
         self.declare_parameter('reverse_heading_kp', 1.0)        # ganancia P para apuntar hacia delivery.acceso
-        # Freno de proximidad trasero durante la reversa: el robot no "ve"
-        # literalmente hacia atrás (no hay cámara), pero el LiDAR (sllidar,
-        # RPLidar) SÍ es de 360° — los mismos /scan que usa dwa_node también
-        # traen los rebotes de detrás. scan_topic/laser_angle_offset DEBEN
-        # coincidir con los que usa navigation_*_launch.py (/scan + 0.0 en
-        # sim, /scan_fixed + π en el robot real — ahí el cable del RPLidar
-        # apunta hacia atrás) para interpretar los ángulos correctamente.
+        # Freno de proximidad trasero durante la reversa: el LiDAR es 360°,
+        # los mismos /scan de dwa_node traen los rebotes de atrás.
+        # scan_topic/laser_angle_offset deben coincidir con navigation_*_launch.py
+        # (/scan + 0.0 sim, /scan_fixed + π real, cable del RPLidar hacia atrás).
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('laser_angle_offset', 0.0)
         self.declare_parameter('reverse_min_clearance', 0.15)    # [m] frena si algo se acerca más que esto
         self.declare_parameter('reverse_rear_arc_deg', 100.0)    # semiángulo del arco trasero vigilado
-        # Igual que delivery_*: el waypoint de alineación a un pallet (p{N})
-        # puede caer DENTRO del costmap inflado si está pegado a un rack,
-        # y rrt_node nunca encuentra ruta — se reduce solo inflation_radius/
-        # dynamic_inflation_radius (planeación global) antes de acercarse;
-        # a diferencia de la entrega, aquí NO hace falta tocar robot_radius
-        # de dwa_node (no es un pasillo angosto, solo el punto cae en zona
-        # inflada — basta con que rrt_node encuentre ruta).
+        # Como delivery_*: si p{N} cae dentro del costmap inflado (pegado a
+        # un rack) rrt_node no encuentra ruta -- se reduce solo
+        # inflation_radius/dynamic_inflation_radius (sin tocar robot_radius,
+        # no es pasillo angosto).
         self.declare_parameter('pallet_inflation_radius', 0.10)
 
         self._sweep_range   = math.radians(self.get_parameter('sweep_range_deg').value)
@@ -266,14 +211,10 @@ class MissionManagerNode(Node):
         self._align_on_done = None              # callable() invocado al terminar el giro
 
         self._fpga_wait_start = None            # Time: inicio de la espera calibrada de FPGA
-        # Time: inicio de WAITING_ALIGNMENT -- esa espera depende por
-        # completo de que align_and_approach publique /alineation/booleano
-        # == True (ver _cb_alineacion); ese topic NO tiene timeout propio,
-        # así que si align_and_approach se planta (p. ej. pierde el target
-        # y no logra recuperarse) la misión entera quedaría esperando aquí
-        # para siempre, en silencio. Reusa nav_timeout_s (mismo mecanismo
-        # que _goal_start_time/_reverse_start_time) solo para que ese
-        # atorón sea visible y aborte -- no para reintentar/buscar de nuevo.
+        # Time: inicio de WAITING_ALIGNMENT. Ese estado depende de que
+        # align_and_approach publique /alineation/booleano==True (sin
+        # timeout propio); reusa nav_timeout_s solo para hacer visible y
+        # abortar si se planta, no para reintentar.
         self._align_wait_start = None
 
         # ---- Maniobra de reversa (regreso a delivery.acceso) ----
@@ -281,23 +222,15 @@ class MissionManagerNode(Node):
         self._reverse_target: dict | None = None      # {'x':.., 'y':..} de delivery.acceso
         self._reverse_start_time = None               # Time: para reverse_timeout (reusa nav_timeout_s)
         self._reverse_on_done = None
-        # Freno de proximidad trasero (ver _cb_scan / _do_reverse_to_acceso):
-        # None = todavía no llega ningún /scan → se trata como "frenar"
-        # (seguro por defecto, igual que dwa_node sin datos de sensor).
+        # None = sin /scan aún -> se trata como "frenar" (seguro por defecto).
         self._rear_clearance: float | None = None
         self._reverse_braking = False
 
         # ---- Control dinámico de margen del costmap/dwa (zonas estrechas) ----
         # ver _start_costmap_reduce/_start_costmap_restore/_poll_costmap_inflation
-        # Mecanismo GENÉRICO reusado en dos situaciones (cada una con sus
-        # propios valores objetivo — ver delivery_*/pallet_* arriba):
-        #   - entrega: el punto cae en un pasillo angosto pegado a la pared
-        #     → hace falta reducir LOS TRES (si no, dwa_node sigue frenando
-        #     y oscilando aunque rrt_node ya encuentre ruta)
-        #   - acercarse a un pallet (p{N}): el punto puede caer DENTRO del
-        #     costmap inflado (pegado al rack) y rrt_node no encuentra ruta
-        #     → basta reducir costmap (planeación global); robot_radius se
-        #     deja en su valor normal (ver _costmap_keep_robot_radius)
+        # Mecanismo genérico para dos casos: entrega (pasillo angosto, reduce
+        # los tres radios) y acercarse a un pallet (solo costmap, robot_radius
+        # se deja normal -- ver _costmap_keep_robot_radius).
         self._normal_inflation: float | None = None           # se consultan una sola vez (lazy)
         self._normal_dynamic_inflation: float | None = None
         self._normal_robot_radius: float | None = None
@@ -336,44 +269,24 @@ class MissionManagerNode(Node):
         self._goal_pub      = self.create_publisher(PoseStamped, '/goal_pose', _RELIABLE)
         self._cancel_pub    = self.create_publisher(Empty, '/cancel_navigation', 10)
         self._deteccion_pub = self.create_publisher(String, '/deteccion_pallet', _RELIABLE)
-        # Anuncia el inicio de cada barrido (nombre del área) — lo usa
-        # vision_faker para reiniciar su estado simulado automáticamente al
-        # cambiar de área (ver _start_sweep / VisionFaker._cb_sweep_area);
-        # también sirve como gancho genérico para cualquier observador
-        # externo (GUI, logging) que quiera saber en qué área está parado.
+        # Anuncia el inicio de cada barrido (área); vision_faker lo usa para
+        # reiniciar su estado simulado al cambiar de área (_cb_sweep_area).
         self._sweep_area_pub = self.create_publisher(String, '/mission_sweep_area', _RELIABLE)
         self._cmd_vel_pub   = self.create_publisher(Twist, '/cmd_vel', _RELIABLE)
-        # Bandera para que dwa_node ceda /cmd_vel mientras este nodo (o
-        # align_and_approach/tracking) maneja /cmd_vel directo durante el
-        # barrido / la alineación fina (replica el patrón de /mcl_wandering).
-        # dwa_node YA se suscribe a este topic y lo respeta en su _loop
-        # (ver _external_cmd_cb / self._external_active en dwa_node.py).
+        # Bandera para que dwa_node ceda /cmd_vel durante barrido/alineación
+        # fina (ver _external_cmd_cb en dwa_node.py).
         self._ext_cmd_pub = self.create_publisher(Bool, '/external_cmd_vel_active', 10)
-        # align_and_approach reutiliza un único nodo para las 4 áreas de
-        # pickup y mantiene estado de fases entre ellas a propósito (ver
-        # _reset_phase_state allá) -- este topic le avisa "nuevo intento,
-        # olvida lo anterior" justo antes de cada SEND_DETECCION. Bool en
-        # vez de Empty: el booleano lleva la confirmación "ya demostramos
-        # en el barrido (_evaluate_sweep_stop) que este pallet tiene QR
-        # legible" -- así align_and_approach arranca el intento ya con
-        # _target_locked=True, sin tener que re-derivar esa misma certeza
-        # cuadro a cuadro, en movimiento y de lejos (ver _reset_phase_state
-        # allá para el porqué eso es justo lo que lo hacía plantarse).
+        # align_and_approach reutiliza un nodo para las 4 áreas; este topic
+        # le avisa "nuevo intento" antes de cada SEND_DETECCION. Bool en vez
+        # de Empty: indica si el barrido ya confirmó QR legible, así
+        # align_and_approach arranca con _target_locked=True.
         self._align_reset_pub = self.create_publisher(Bool, '/align_and_approach/reset', 10)
-        # Activa/desactiva la máquina de fases + /cmd_vel de align_and_approach
-        # (ver _active/_active_callback allá). Solo True durante la
-        # aproximación final (SEND_DETECCION..WAITING_ALIGNMENT) -- en
-        # cualquier otro momento (barrido, navegación) align_and_approach
-        # publicaba a /cmd_vel sin que se lo pidiéramos, compitiendo con los
-        # giros del barrido y haciendo que el robot se pasara del pallet
-        # correcto antes de poder muestrearlo.
+        # Activa la máquina de fases + /cmd_vel de align_and_approach. Solo
+        # True durante la aproximación final (SEND_DETECCION..WAITING_ALIGNMENT).
         self._align_active_pub = self.create_publisher(Bool, '/align_and_approach/active', 10)
 
-        # Clientes de servicio hacia costmap_node y dwa_node — para
-        # desinflar/inflar la zona de entrega y reducir/restaurar el margen
-        # de evitación local en caliente (ver _poll_costmap_inflation).
-        # Requiere que ambos nodos tengan add_on_set_parameters_callback
-        # (agregado junto con esta función).
+        # Clientes hacia costmap_node/dwa_node para desinflar/inflar la zona
+        # de entrega y el margen de evitación en caliente (_poll_costmap_inflation).
         self._costmap_get_client = self.create_client(GetParameters, '/costmap_node/get_parameters')
         self._costmap_set_client = self.create_client(SetParameters, '/costmap_node/set_parameters')
         self._dwa_get_client = self.create_client(GetParameters, '/dwa_node/get_parameters')
@@ -453,11 +366,8 @@ class MissionManagerNode(Node):
         return (self.get_clock().now() - start).nanoseconds / 1e9
 
     def _send_nav_goal(self, pose: PoseStamped):
-        """Publica el goal en /goal_pose, marca self._goal_active = True
-        y arranca el cronómetro de timeout (nav_timeout_s). Si
-        /waypoint_reached no llega a tiempo, _loop() debe abortar la
-        misión (path_follower ya re-planifica solo ante atascos — un
-        timeout aquí indica algo más grave, p.ej. goal inalcanzable)."""
+        """Publica el goal, marca self._goal_active=True y arranca el
+        timeout (nav_timeout_s); si /waypoint_reached no llega, _loop() aborta."""
         self._goal_pub.publish(pose)
         self._goal_active = True
         self._goal_start_time = self.get_clock().now()
@@ -465,11 +375,8 @@ class MissionManagerNode(Node):
             f'Goal enviado → ({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})')
 
     def _cb_waypoint_reached(self, _msg: Empty):
-        """Confirma la llegada al goal actual. CRÍTICO: solo procesar si
-        self._goal_active es True (descarta ecos viejos), y apagar la
-        bandera de inmediato — para que no quede ninguna navegación
-        "fantasma" que dispare al fpga_controller_node fuera de tiempo
-        (ver nota de carrera de /waypoint_reached en el diseño)."""
+        """Confirma llegada al goal actual; ignora si self._goal_active es
+        False (eco viejo) y apaga la bandera de inmediato."""
         if not self._goal_active:
             return
         self._goal_active = False
@@ -484,13 +391,10 @@ class MissionManagerNode(Node):
         self._pose_ready = True
 
     def _cb_scan(self, msg: LaserScan):
-        """Guarda en self._rear_clearance la distancia mínima detectada en
-        un arco ancho centrado en 'atrás' del robot (±reverse_rear_arc_deg,
-        corregido por laser_angle_offset — el LiDAR es de 360°, así que SÍ
-        cubre la parte trasera aunque el robot no tenga cámara hacia allá).
-        Se usa SOLO como freno de proximidad durante _do_reverse_to_acceso;
-        se mantiene siempre actualizado (no solo durante la reversa) para
-        que el primer ciclo de la maniobra ya tenga un dato fresco."""
+        """Guarda en self._rear_clearance la distancia mínima en un arco
+        ±reverse_rear_arc_deg detrás del robot (corregido por
+        laser_angle_offset). Usado como freno en _do_reverse_to_acceso;
+        se actualiza siempre para tener dato fresco al iniciar la reversa."""
         amin = msg.angle_min
         ainc = msg.angle_increment
         rmin = msg.range_min
@@ -520,17 +424,10 @@ class MissionManagerNode(Node):
 
     def _start_sweep(self, area: str, waypoint: str, pallet_indices: tuple[int, ...],
                      range_deg: float | None = None):
-        """Calcula las paradas del barrido de esta fase (ver _SWEEP_PHASES).
-
-        'waypoint' está grabado mirando ya hacia la primera posición de esta
-        fase (la más a la izquierda) — así que la parada 0 coincide con esa
-        misma orientación (el robot ya llegó alineado a ella vía
-        ALIGN_TO_YAW) y las siguientes avanzan girando hacia la DERECHA (yaw
-        decreciente, en pasos de rango/(N-1)) hasta cubrir 'range_deg' en
-        total (o sweep_range_deg global si range_deg es None). Reinicia los
-        índices de barrido y pasa a SWEEP_TURN_TO_STOP.
-
-        Cada parada i (0-indexed) corresponde al waypoint p{pallet_indices[i]}."""
+        """Calcula las paradas de esta fase (ver _SWEEP_PHASES). 'waypoint'
+        ya mira hacia la primera parada (parada 0); las siguientes giran
+        hacia la DERECHA en pasos de range_deg/(N-1) (o sweep_range_deg
+        global si range_deg es None). Cada parada i corresponde a p{pallet_indices[i]}."""
         n = len(pallet_indices)
         sweep_range = math.radians(range_deg) if range_deg is not None else self._sweep_range
         start = self._yaw_de_waypoint(area, waypoint)
@@ -568,11 +465,9 @@ class MissionManagerNode(Node):
         self._ext_cmd_pub.publish(Bool(data=active))
 
     def _do_sweep_turn(self):
-        """Gira en el lugar hacia self._sweep_stops[self._sweep_idx] con
-        control proporcional simple (igual patrón que _do_align en
-        path_follower_node). Al quedar dentro de sweep_align_threshold_deg,
-        detiene el giro, reinicia el buffer de muestras y pasa a
-        SWEEP_SAMPLING tras sweep_settle_time_s de asentamiento."""
+        """Gira en el lugar hacia self._sweep_stops[self._sweep_idx] (control
+        P, igual que _do_align en path_follower_node). Dentro de
+        sweep_align_threshold_deg, detiene y pasa a SWEEP_SAMPLING."""
         target = self._sweep_stops[self._sweep_idx]
         err = _wrap_angle(target - self._rth)
 
@@ -592,18 +487,12 @@ class MissionManagerNode(Node):
     # ───────────────────── Giro a yaw grabado (post-navegación) ──────────────
 
     def _start_align_to_yaw(self, target_yaw: float, on_done):
-        """Arranca un giro en el lugar hacia 'target_yaw' (mismo control
-        proporcional que _do_sweep_turn) y, al terminar, invoca 'on_done'
-        (callable sin argumentos) para que el llamador decida cómo continuar.
-
-        Existe porque el stack de navegación IGNORA la orientación final del
-        /goal_pose: rrt_node fuerza orientation.w=1.0 al construir el
-        /global_path, y path_follower_node solo compara distancia (x, y) para
-        publicar /waypoint_reached — el robot puede llegar a 'general' o a
-        'p{N}' mirando hacia cualquier lado. Este paso fuerza que termine
-        mirando exactamente hacia el yaw grabado en el .yaml (necesario para
-        que el barrido arranque alineado, y para que la cámara quede apuntando
-        hacia el pallet al llegar a 'p{N}')."""
+        """Gira en el lugar hacia 'target_yaw' (mismo control que
+        _do_sweep_turn) y al terminar invoca 'on_done'. Necesario porque el
+        stack de navegación ignora la orientación final del /goal_pose
+        (rrt_node fuerza w=1.0); este paso deja al robot mirando el yaw
+        grabado en el .yaml, requerido para el barrido y para apuntar la
+        cámara al llegar a 'p{N}'."""
         self._align_target_yaw = target_yaw
         self._align_on_done = on_done
         self._state = MissionState.ALIGN_TO_YAW
@@ -628,20 +517,11 @@ class MissionManagerNode(Node):
     # ───────────────── Reversa de salida (zona de entrega) ───────────────────
 
     def _start_reverse_to_acceso(self, on_done):
-        """Arranca el regreso a delivery.acceso EN REVERSA, sin girar 180° —
-        el pasillo de entrega es angosto y el robot llega con el montacargas
-        justo enfrente, así que no hay espacio para darse la vuelta; debe
-        retroceder hacia delivery.acceso.
-
-        Control: en cada ciclo se recalcula el rumbo "hacia atrás" que
-        apunta a delivery.acceso (ver _do_reverse_to_acceso) y se corrige
-        proporcionalmente hacia él, avanzando con velocidad lineal NEGATIVA
-        constante. Se detiene si el LiDAR (360°, ver _cb_scan) detecta algo
-        demasiado cerca por detrás — el robot no tiene cámara hacia atrás,
-        pero el láser sí "ve" en esa dirección. Termina cuando la distancia a
-        delivery.acceso cae bajo reverse_goal_tolerance — igual que
-        _ensure_nav_goal pero sin pasar por rrt_node/path_follower (que
-        solo saben ir hacia adelante)."""
+        """Regresa a delivery.acceso EN REVERSA sin girar 180° (pasillo angosto,
+        montacargas enfrente). Recalcula cada ciclo el rumbo "hacia atrás" hacia
+        el target y corrige proporcionalmente con velocidad lineal negativa
+        constante; frena si el LiDAR trasero detecta obstáculo. Termina dentro
+        de reverse_goal_tolerance."""
         self._reverse_target = self._waypoints['delivery']['acceso']['position']
         self._reverse_start_time = self.get_clock().now()
         self._reverse_on_done = on_done
@@ -675,10 +555,8 @@ class MissionManagerNode(Node):
             self._state = MissionState.ABORTED
             return
 
-        # Freno de proximidad trasero: el robot no tiene cámara hacia atrás,
-        # pero el LiDAR es de 360° y sí "ve" en esa dirección (_cb_scan).
-        # Solo frena (no esquiva) — esquivar en reversa requeriría replanear,
-        # y el timeout de arriba aborta la misión si queda atrapado.
+        # Freno trasero vía LiDAR 360° (_cb_scan); solo frena, no esquiva
+        # (el timeout de arriba aborta si queda atrapado).
         braking = (self._rear_clearance is None
                    or self._rear_clearance < self._reverse_min_clearance)
         if braking != self._reverse_braking:
@@ -694,14 +572,8 @@ class MissionManagerNode(Node):
             self._cmd_vel_pub.publish(Twist())
             return
 
-        # Corrección proporcional de rumbo: el rumbo deseado es el que hace
-        # que retroceder (linear.x negativo) lleve al robot HACIA tx,ty —
-        # es decir, el rumbo "de espaldas" al objetivo (atan2 desde el
-        # objetivo hacia el robot). Se recalcula cada ciclo con la posición
-        # actual, así que converge a delivery.acceso sin importar el rumbo
-        # con el que haya quedado el robot tras la entrega (válido igual
-        # yendo hacia adelante o en reversa: theta_dot = omega no depende
-        # del signo de v).
+        # Rumbo deseado = "de espaldas" al objetivo (atan2 objetivo→robot),
+        # recalculado cada ciclo para converger sin importar la orientación inicial.
         heading_target = math.atan2(self._ry - ty, self._rx - tx)
         err = _wrap_angle(heading_target - self._rth)
         w = max(-self._sweep_speed, min(self._sweep_speed, self._reverse_heading_kp * err))
@@ -714,26 +586,11 @@ class MissionManagerNode(Node):
     # ───────────────── Inflado/desinflado dinámico del costmap (entrega) ─────
 
     def _start_costmap_reduce(self, target_inflation, target_robot_radius, on_done):
-        """Arranca la secuencia GENÉRICA para reducir, A LA VEZ, los
-        parámetros de otros nodos que controlan qué tan cerca de un
-        obstáculo puede ir/planear el robot (ver _poll_costmap_inflation
-        para el detalle de fases):
-          - costmap_node.inflation_radius / dynamic_inflation_radius (capas
-            estática y dinámica — si solo se tocara una, la otra volvería a
-            tapar la zona y rrt_node seguiría sin encontrar ruta) → SIEMPRE
-            se reducen a target_inflation
-          - dwa_node.robot_radius (margen de evitación local) → solo si
-            target_robot_radius no es None; si es None se deja en su valor
-            normal (caso pallet: el problema es que rrt_node no encuentra
-            ruta porque el punto cae en zona inflada, NO que dwa_node oscile
-            — tocar robot_radius ahí sería un riesgo innecesario)
-
-        La primera vez que se llama (a CUALQUIERA de los dos escenarios que
-        usan este mecanismo — entrega o pallet) también consulta vía
-        get_parameters y recuerda los tres valores normales, para
-        restaurarlos exactos más adelante con _start_costmap_restore — evita
-        duplicarlos como parámetros propios (los de simulación y los del
-        robot real son distintos)."""
+        """Reduce inflation_radius/dynamic_inflation_radius de costmap_node
+        (siempre, ambas capas) a target_inflation, y dwa_node.robot_radius solo
+        si target_robot_radius no es None. En la primera llamada cachea los
+        valores normales vía get_parameters para restaurarlos después con
+        _start_costmap_restore."""
         if not self._delivery_clearance_services_ready():
             self.get_logger().error(
                 'Servicios de parámetros de costmap_node/dwa_node no disponibles '
@@ -754,12 +611,8 @@ class MissionManagerNode(Node):
                 GetParameters.Request(names=['inflation_radius', 'dynamic_inflation_radius']))
 
     def _start_costmap_restore(self, on_done):
-        """Restaura los tres parámetros (costmap_node.inflation_radius/
-        dynamic_inflation_radius, dwa_node.robot_radius) a los valores
-        normales recordados por la primera llamada a _start_costmap_reduce
-        (ya consultados, no hace falta volver a pedirlos). Sirve para
-        ambos escenarios (entrega y pallet) — el destino es siempre
-        'el valor normal', sin importar cuál de los dos lo redujo."""
+        """Restaura inflation_radius/dynamic_inflation_radius/robot_radius a
+        los valores normales cacheados por _start_costmap_reduce."""
         if not self._delivery_clearance_services_ready():
             self.get_logger().error(
                 'Servicios de parámetros de costmap_node/dwa_node no disponibles '
@@ -795,9 +648,7 @@ class MissionManagerNode(Node):
 
     def _begin_set_dwa_radius(self):
         self._costmap_phase = 'set_dwa'
-        # Caso pallet (_costmap_keep_robot_radius=True): no tocar robot_radius
-        # — se "restaura" a sí mismo (no-op real, pero mantiene la secuencia
-        # uniforme y el log informativo de abajo coherente).
+        # Caso pallet: no tocar robot_radius (no-op, mantiene la secuencia uniforme).
         target = (self._normal_robot_radius if self._costmap_keep_robot_radius
                   else self._costmap_target_robot_radius)
         req = SetParameters.Request()
@@ -808,9 +659,7 @@ class MissionManagerNode(Node):
         self._costmap_future = self._dwa_set_client.call_async(req)
 
     def _costmap_seq_request_ok(self) -> bool:
-        """Revisa el resultado de la petición set_parameters en curso de la
-        secuencia; si algún nodo la rechazó, aborta la misión. Devuelve True
-        solo si fue exitosa (para que el llamador siga a la siguiente fase)."""
+        """True si la petición set_parameters en curso fue exitosa; si no, aborta la misión."""
         result = self._costmap_future.result()
         if not result.results or not all(r.successful for r in result.results):
             self.get_logger().error(
@@ -820,20 +669,10 @@ class MissionManagerNode(Node):
         return True
 
     def _poll_costmap_inflation(self):
-        """Avanza la secuencia asíncrona de fases para cambiar, sin bloquear
-        el executor, los tres parámetros que controlan qué tan cerca puede
-        llegar el robot a las paredes de la zona de entrega:
-          'query_costmap' (solo la 1ª vez, get_parameters de costmap_node →
-                           recuerda inflation_radius/dynamic_inflation_radius)
-            -> 'query_dwa' (solo la 1ª vez, get_parameters de dwa_node →
-                            recuerda robot_radius)
-            -> 'set_costmap' (set_parameters con ambas inflaciones objetivo)
-            -> 'set_dwa'     (set_parameters con robot_radius objetivo)
-            -> 'settling'    (costmap_settle_time_s — costmap_node recalcula
-                              _static_costmap y republica /costmap antes de seguir)
-            -> on_done()
-        Cualquier falla de servicio aborta la misión (no tiene sentido seguir
-        si no se puede confiar en qué tan cerca de las paredes puede ir el robot)."""
+        """Avanza sin bloquear la secuencia de fases:
+        query_costmap (1ª vez) -> query_dwa (1ª vez) -> set_costmap -> set_dwa
+        -> settling (costmap_settle_time_s) -> on_done(). Cualquier falla de
+        servicio aborta la misión."""
         if self._costmap_phase == 'query_costmap':
             if not self._costmap_future.done():
                 return
@@ -896,14 +735,10 @@ class MissionManagerNode(Node):
             on_done()
 
     def _do_sweep_sampling(self):
-        """Espera sweep_settle_time_s (para que la imagen deje de moverse),
-        luego acumula sweep_samples_per_stop lecturas de
-        (/pallet_detected, /pallet_has_qr, /pallet_qr_content) según van
-        llegando. Al completar la muestra, evalúa con _evaluate_sweep_stop():
-          - si hay pallet+QR consistente → cachear cliente + índice,
-            _stop_sweep() y pasar a NAV_TO_PALLET (early exit)
-          - si no → avanzar self._sweep_idx; si quedan paradas, volver a
-            SWEEP_TURN_TO_STOP; si no, pasar a SWEEP_EMPTY"""
+        """Espera sweep_settle_time_s, acumula sweep_samples_per_stop lecturas
+        de detección/QR y evalúa con _evaluate_sweep_stop(): si hay match,
+        cachea cliente+índice y pasa a NAV_TO_PALLET; si no, avanza a la
+        siguiente parada o a SWEEP_EMPTY si ya no quedan."""
         if self._elapsed_s(self._sweep_phase_start) < self._sweep_settle:
             return
 
@@ -930,11 +765,8 @@ class MissionManagerNode(Node):
                     f'Pallet encontrado → índice={self._pallet_idx_objetivo} '
                     f'(QR no decodificado aún, se reintenta al acercarse)')
             self._stop_sweep()
-            # El waypoint p{N} puede caer DENTRO del costmap inflado (pegado
-            # al rack) y rrt_node no encontrar ruta — se reduce primero
-            # inflation_radius/dynamic_inflation_radius (mismo mecanismo
-            # genérico que usa la entrega, ver _start_costmap_reduce; aquí
-            # con target_robot_radius=None: no se toca dwa_node.robot_radius).
+            # p{N} puede caer dentro del costmap inflado (pegado al rack) →
+            # reducir inflation primero (sin tocar robot_radius).
             self._start_costmap_reduce(self._pallet_inflation, None,
                                        self._on_pallet_costmap_deflated)
             return
@@ -947,20 +779,10 @@ class MissionManagerNode(Node):
             self._state = MissionState.SWEEP_TURN_TO_STOP
 
     def _evaluate_sweep_stop(self) -> tuple[bool, str | None]:
-        """Agrega las muestras de la parada actual y devuelve (matched, cliente):
-
-        - matched=True si hay mayoría de muestras con pallet_detected==True.
-          Esto NO exige que el QR se haya decodificado: desde la distancia
-          del barrido, pyzbar/cv2 casi nunca logran decodificar el texto del
-          QR aunque el pallet (y el QR como bbox, geométricamente emparejado)
-          sí estén presentes -- exigir eso aquí hacía que el barrido se
-          saltara siempre el pallet correcto.
-        - cliente: si AL MENOS UNA muestra trae pallet_has_qr+contenido no
-          vacío (no hace falta mayoría ni consistencia -- basta una lectura
-          válida), el cliente resuelto a partir de ese contenido. Si ninguna
-          muestra logró decodificar, None -- se reintenta más tarde, ya
-          cerca del pallet, vía _cb_pallet_qr_content (ver WAITING_LOAD para
-          el abort de seguridad si nunca se resuelve)."""
+        """Devuelve (matched, cliente): matched=True si mayoría de muestras
+        detectan pallet (no exige QR decodificado, raro a esa distancia).
+        cliente = primer QR decodificado válido, o None si ninguno (se
+        reintenta luego cerca del pallet vía _cb_pallet_qr_content)."""
         n = len(self._sweep_samples)
         n_pallet = sum(1 for s in self._sweep_samples if s[0])
         if n_pallet <= n // 2:
@@ -977,12 +799,9 @@ class MissionManagerNode(Node):
         return True, None
 
     def _normalizar_cliente_qr(self, contenido: str) -> str | None:
-        """Traduce el contenido decodificado del QR a la clave de cliente
-        usada en waypoints['delivery'] ('cliente1', 'cliente2', ...).
-        Acepta tanto la marca impresa en el QR físico (p.ej. 'Pepsi',
-        'Amazon', ver _QR_MARCA_A_CLIENTE) como 'clienteN' directamente
-        (usado por vision_faker.py en simulación). Devuelve None si el
-        contenido no corresponde a ningún cliente conocido."""
+        """Traduce el QR decodificado a clave de cliente ('clienteN'). Acepta
+        marca impresa (ver _QR_MARCA_A_CLIENTE) o 'clienteN' directo (sim).
+        None si no corresponde a ningún cliente conocido."""
         texto = contenido.strip().lower()
         if texto in self._waypoints['delivery']:
             return texto
@@ -1017,22 +836,18 @@ class MissionManagerNode(Node):
     # ───────────────────────── Alineación + FPGA ─────────────────────────
 
     def _send_deteccion_pallet(self, tipo: str):
-        """Publica String('rack') o String('rodillo') en /deteccion_pallet.
-        SOLO se llama desde SEND_DETECCION, es decir, después de confirmar
-        self._goal_active == False tras llegar al waypoint del pallet —
-        nunca antes (ver corrección de orden: evita que el /waypoint_reached
-        de esa llegada sea malinterpretado por fpga_controller_node como
-        'llegó al destino final')."""
+        """Publica String('rack'/'rodillo') en /deteccion_pallet. Solo se
+        llama desde SEND_DETECCION (tras confirmar llegada al waypoint del
+        pallet), para que fpga_controller_node no confunda el
+        /waypoint_reached previo con 'llegó al destino final'."""
         tipo_norm = 'rack' if tipo.startswith('rack') else 'rodillo'
         self._deteccion_pub.publish(String(data=tipo_norm))
         self.get_logger().info(f'Publicado /deteccion_pallet = "{tipo_norm}"')
 
     def _cb_alineacion(self, msg: Bool):
-        """Vision confirma alineación fina completa ('ARRIVED'). Solo
-        procesar en WAITING_ALIGNMENT. fpga_controller_node también
-        escucha este topic y dispara su propia secuencia en paralelo —
-        este nodo NO debe reenviar nada, solo usarlo como gatillo para
-        avanzar su propia FSM hacia la espera calibrada de carga."""
+        """Vision confirma alineación fina ('ARRIVED'); solo se procesa en
+        WAITING_ALIGNMENT. fpga_controller_node escucha el mismo topic en
+        paralelo — aquí solo avanza la FSM a la espera de carga."""
         if self._state != MissionState.WAITING_ALIGNMENT or not msg.data:
             return
         self.get_logger().info('Alineación confirmada → esperando que la FPGA cargue el pallet')
@@ -1045,18 +860,15 @@ class MissionManagerNode(Node):
         return _PICKUP_AREAS[self._area_idx]
 
     def _resolver_delivery(self, cliente: str) -> tuple[str, str]:
-        """Mapea el nombre de cliente leído del QR a su clave en
-        waypoints['delivery']. Asume que el QR contiene exactamente
-        'cliente1'/'cliente2'/'cliente3' (igual que las claves del .yaml)."""
+        """Mapea el cliente del QR a su clave en waypoints['delivery']
+        ('cliente1'/'cliente2'/'cliente3', igual que el .yaml)."""
         if cliente not in self._waypoints['delivery']:
             raise RuntimeError(f"QR decodificado a '{cliente}' pero no existe en delivery del .yaml")
         return 'delivery', cliente
 
     def _resolver_acceso_cliente(self, cliente: str) -> tuple[str, str]:
-        """Mapea el cliente a su punto de pre-alineación delivery.accesoc{N}
-        (mismo N que clienteN) — ahí el robot ya queda orientado para entrar
-        en línea recta a delivery[clienteN], evitando que rrt_node trace una
-        curva de último momento dentro del pasillo angosto."""
+        """Mapea el cliente a su punto de pre-alineación delivery.accesoc{N},
+        donde el robot ya queda orientado para entrar recto al pasillo."""
         accesoc = cliente.replace('cliente', 'accesoc')
         if accesoc not in self._waypoints['delivery']:
             raise RuntimeError(f"falta 'delivery.{accesoc}' en waypoints.yaml para alinear hacia '{cliente}'")
@@ -1065,9 +877,8 @@ class MissionManagerNode(Node):
     # ───────────────────────── Bucle principal de la FSM ─────────────────────
 
     def _loop(self):
-        """Despacha según self._state. Cada rama publica/transiciona y
-        retorna; toda la lógica es asíncrona vía callbacks + este timer
-        a 10 Hz — nunca bloquea el executor."""
+        """Despacha según self._state; cada rama publica/transiciona y
+        retorna (todo asíncrono vía callbacks + timer a 10 Hz)."""
         st = self._state
 
         if st == MissionState.WAITING_LOCALIZATION:
@@ -1088,9 +899,7 @@ class MissionManagerNode(Node):
                 self._sweep_phase_retries = 0
                 fase_wp, _, _ = _SWEEP_PHASES[self._area_actual()][0]
                 if fase_wp == 'general':
-                    # Caso racks: la fase 0 ES 'general' -- ya estamos ahí,
-                    # solo falta alinear y arrancar el barrido (evita
-                    # re-navegar al mismo punto vía NAV_TO_SWEEP_PHASE).
+                    # Caso racks: fase 0 == 'general', ya estamos ahí; solo alinear y barrer.
                     yaw = self._yaw_de_waypoint(self._area_actual(), fase_wp)
                     self._start_align_to_yaw(yaw, self._on_aligned_to_sweep_phase)
                 else:
@@ -1130,35 +939,21 @@ class MissionManagerNode(Node):
         if st == MissionState.SEND_DETECCION:
             tipo = self._area_actual()
             self._send_deteccion_pallet(tipo)
-            # align_and_approach reutiliza el mismo nodo (y por tanto su
-            # estado de fases _align_phase/_approach_phase/_target_locked)
-            # para las 4 áreas de _PICKUP_AREAS -- sin avisarle de un nuevo
-            # intento, tras la primera llegada exitosa reportaría "ARRIVED"
-            # fantasma de inmediato en las siguientes 3, sin moverse. Este
-            # reset SIEMPRE precede al próximo intento de alineación, sea la
-            # primera área o la cuarta. data=True: el barrido que nos trajo
-            # aquí (_evaluate_sweep_stop) ya validó pallet+QR consistente --
-            # se lo confirmamos a align_and_approach para que arranque
-            # LOCKED y no tenga que volver a probarlo por su cuenta.
+            # Reset previo a cada intento de alineación: align_and_approach reutiliza
+            # el mismo nodo/estado para las 4 áreas y reportaría "ARRIVED" fantasma
+            # sin esto. data=True confirma pallet+QR ya validados (arranca LOCKED).
             self._align_reset_pub.publish(Bool(data=True))
             self._align_active_pub.publish(Bool(data=True))
-            # align_and_approach/tracking publican directo a /cmd_vel (no pasan
-            # por dwa_node) durante la alineación fina — avisamos para que
-            # dwa_node ceda el control y no compitan por /cmd_vel al mismo
-            # tiempo (mismo patrón que el barrido / ALIGN_TO_YAW). Se apaga en
-            # _cb_alineacion al confirmarse la alineación.
+            # Cede /cmd_vel a align_and_approach/tracking durante la alineación fina
+            # (se apaga en _cb_alineacion).
             self._publish_external_cmd_active(True)
             self._align_wait_start = self.get_clock().now()
             self._state = MissionState.WAITING_ALIGNMENT
             return
 
         if st == MissionState.WAITING_ALIGNMENT:
-            # No es un retry/timeout-para-volver-a-buscar (eso ya se evaluó
-            # y se descartó por complejidad innecesaria para este despliegue
-            # de un solo target en pasillo angosto) -- es solo una red para
-            # que un atorón de align_and_approach (que hoy no tiene forma de
-            # avisar "me quedé sin recuperación") aborte la misión de forma
-            # visible en vez de colgarla en silencio para siempre.
+            # Red de seguridad: si align_and_approach se atora sin forma de avisarlo,
+            # abortar visiblemente en vez de colgar la misión para siempre.
             if self._elapsed_s(self._align_wait_start) > self._nav_timeout:
                 self.get_logger().error(
                     'WAITING_ALIGNMENT excedió nav_timeout_s sin recibir '
@@ -1173,12 +968,7 @@ class MissionManagerNode(Node):
             if self._elapsed_s(self._fpga_wait_start) >= self._fpga_settle:
                 self._fpga_wait_start = None
                 if self._cliente_actual is None:
-                    # El barrido encontró el pallet pero nunca se logró
-                    # decodificar su QR (ni durante el barrido ni al
-                    # acercarse, ver _cb_pallet_qr_content) -> sin cliente no
-                    # hay a dónde entregar. Abortar de forma visible en vez
-                    # de seguir con _cliente_actual=None (crashearía más
-                    # adelante en _resolver_acceso_cliente/_resolver_delivery).
+                    # Nunca se decodificó el QR del cliente -> sin destino, abortar.
                     self.get_logger().error(
                         'Pallet cargado pero nunca se pudo decodificar el QR '
                         'del cliente -> abortando misión')
@@ -1242,12 +1032,8 @@ class MissionManagerNode(Node):
     # ── helpers de transición ────────────────────────────────────────────
 
     def _ensure_nav_goal(self, area: str, punto: str) -> bool:
-        """Envía el goal a (area, punto) UNA SOLA VEZ (lo recuerda en
-        self._nav_pending_target) y devuelve True exactamente en el ciclo
-        en que /waypoint_reached confirma la llegada a ESE goal — momento
-        en que el llamador debe transicionar de estado. Evita reenvíos
-        mientras el goal sigue en curso y falsos positivos de llegadas
-        viejas."""
+        """Envía el goal (area, punto) una sola vez y devuelve True en el
+        ciclo en que /waypoint_reached confirma la llegada a ese goal."""
         target = (area, punto)
 
         if self._nav_pending_target is None:
@@ -1275,10 +1061,8 @@ class MissionManagerNode(Node):
         self._state = MissionState.SEND_DETECCION
 
     def _on_costmap_deflated(self):
-        """Costmap ya desinflado y asentado → ahora sí hay ruta hacia la
-        zona de clientes; primero pasa por delivery.accesoc{N} para quedar
-        pre-alineado y entrar derecho a delivery[cliente] (ver
-        NAV_TO_DELIVERY_ALIGN / _resolver_acceso_cliente)."""
+        """Costmap desinflado → pasar por delivery.accesoc{N} para quedar
+        pre-alineado antes de entrar a delivery[cliente]."""
         self._state = MissionState.NAV_TO_DELIVERY_ALIGN
 
     def _on_costmap_inflated(self):
@@ -1292,9 +1076,7 @@ class MissionManagerNode(Node):
         self._state = MissionState.NAV_TO_PALLET
 
     def _on_pallet_costmap_restored(self):
-        """Costmap restaurado a su inflado normal tras cargar el pallet
-        (el robot ya está detenido junto al rack, no hace falta seguir con
-        el margen reducido) → continuar hacia delivery.acceso."""
+        """Costmap restaurado tras cargar el pallet → continuar hacia delivery.acceso."""
         self._state = MissionState.NAV_TO_DELIVERY_ACCESO
 
     def _on_arrived_acceso_reversing(self):
@@ -1308,22 +1090,10 @@ class MissionManagerNode(Node):
             f'| esperando que la FPGA deposite el pallet')
 
     def _handle_sweep_empty(self):
-        """Ninguna parada de esta fase tuvo mayoría pallet_detected.
-
-        Antes de avanzar de fase/área, reintenta hasta _MAX_SWEEP_RETRIES
-        veces el barrido de la MISMA fase (re-alineando primero al yaw
-        inicial, igual que la primera vez) -- una ventana de muestreo con
-        mala suerte en visión (oclusión momentánea, parpadeo de YOLO) no
-        debe costar abortar toda la misión (rodillos) o saltarse una fase
-        entera (racks).
-
-        Agotados los reintentos: si quedan más fases de barrido en esta área
-        (ver _SWEEP_PHASES, p.ej. rodillos pasa de generalp12 a general34),
-        navegar a la siguiente fase. Si esta era la última fase: para
-        'rodillos' esto no debería ocurrir (la tarea siempre arranca ahí con
-        pallet asegurado) -- loggear como error y abortar; para racks,
-        avanzar al siguiente; si era rack3, declarar misión completa sin
-        carga."""
+        """Ninguna parada tuvo mayoría pallet_detected: reintenta hasta
+        _MAX_SWEEP_RETRIES veces la misma fase; agotados, avanza a la
+        siguiente fase/área, o aborta si era 'rodillos' sin pallet, o
+        declara misión completa si ya no quedan racks."""
         area = self._area_actual()
 
         if self._sweep_phase_retries < _MAX_SWEEP_RETRIES:

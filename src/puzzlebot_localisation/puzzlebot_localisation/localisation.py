@@ -86,10 +86,10 @@ class Localisation(Node):
         delta_d = v * self.dt
         delta_theta = w * self.dt
 
-        # --- Covariance propagation BEFORE state integration ---
-        # Ak and Jw must be evaluated at θ_k (current state), not θ_{k+1}
+        # Propagación de covarianza ANTES de integrar el estado: Ak y Jw se
+        # evalúan en θ_k, no θ_{k+1}.
 
-        # Ak es la jacobiana de la función de transición respecto al estado
+        # Ak: jacobiana de la transición respecto al estado
         Ak = np.array([
             [1, 0, -v * self.dt * math.sin(self.stheta)],
             [0, 1,  v * self.dt * math.cos(self.stheta)],
@@ -134,9 +134,7 @@ class Localisation(Node):
         odom_msg.header.frame_id = self.odom_frame
         odom_msg.child_frame_id = self.base_frame_id
 
-        # --- PROBABILISTIC LOCALISATION ADDITION: Map 3x3 Sigma into 6x6 ROS covariance ---
-        # 6x6 row-major for [x, y, z, roll, pitch, yaw]
-        # Only the x/y/yaw subblock is populated; remaining DOFs are zero
+        # Mapear Sigma 3x3 al bloque x/y/yaw de la covarianza 6x6 de ROS (resto en cero)
         cov = [0.0] * 36
         cov[0]  = self.Sigma[0, 0]  # x-x
         cov[1]  = self.Sigma[0, 1]  # x-y

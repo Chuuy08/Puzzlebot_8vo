@@ -61,12 +61,8 @@ class CostmapNode(Node):
         self._rmin         = self.get_parameter('laser_min_range').value
 
         self._static_costmap: np.ndarray | None = None
-        self._raw_map: np.ndarray | None = None   # capa de /map sin inflar — se cachea
-                                                   # para poder recalcular _static_costmap
-                                                   # si 'inflation_radius' cambia en caliente
-                                                   # (ver _on_set_parameters, usado por
-                                                   # mission_manager para desinflar/inflar
-                                                   # alrededor de la zona de entrega)
+        self._raw_map: np.ndarray | None = None   # /map sin inflar, cacheado para
+                                                   # recalcular _static_costmap (ver _on_set_parameters)
 
         self._map_W   = 0
         self._map_H   = 0
@@ -136,12 +132,8 @@ class CostmapNode(Node):
             f'paredes={n_par} infladas={n_inf} libres={n_lib}')
 
     def _on_set_parameters(self, params):
-        """Permite cambiar 'inflation_radius' en caliente (servicio
-        set_parameters) y recalcula _static_costmap al vuelo a partir del
-        _raw_map cacheado — por defecto el valor se lee una sola vez en
-        __init__ y queda congelado. mission_manager usa esto para "desinflar"
-        la zona de entrega (que de otro modo queda dentro del costmap inflado
-        y rrt_node nunca encuentra ruta) y volver a inflarla al terminar."""
+        """Cambia 'inflation_radius' en caliente y recalcula _static_costmap
+        desde _raw_map. mission_manager lo usa para desinflar/inflar la zona de entrega."""
         for p in params:
             if p.name == 'inflation_radius':
                 self._r_inf = float(p.value)
@@ -154,10 +146,7 @@ class CostmapNode(Node):
                         f'inflation_radius actualizado a {self._r_inf} m | '
                         f'infladas={n_inf} libres={n_lib}')
             elif p.name == 'dynamic_inflation_radius':
-                # A diferencia de la estática, la capa dinámica se recalcula
-                # de cero en cada /scan (_scan_cb -> _inflate_hits) usando
-                # self._dyn_r_inf directo — no hay nada cacheado que recalcular,
-                # el cambio queda activo desde el siguiente scan.
+                # La capa dinámica se recalcula en cada /scan, sin cache que actualizar.
                 self._dyn_r_inf = float(p.value)
                 self.get_logger().info(f'dynamic_inflation_radius actualizado a {self._dyn_r_inf} m')
         return SetParametersResult(successful=True)
@@ -200,15 +189,13 @@ class CostmapNode(Node):
         if len(r) == 0:
             return
 
-        # Posición del LiDAR en el frame map
-        # (el LiDAR está desplazado lx adelante, ly lateral respecto a base_footprint)
+        # Posición del LiDAR en frame map (desplazado lx/ly de base_footprint)
         cos_r = math.cos(self._robot_yaw)
         sin_r = math.sin(self._robot_yaw)
         laser_x = self._robot_x + self._lx * cos_r - self._ly * sin_r
         laser_y = self._robot_y + self._lx * sin_r + self._ly * cos_r
 
-        # Ángulo de cada beam en el frame map
-        # laser_angle_offset corrige la orientación física del sensor
+        # Ángulo de cada beam en frame map; laser_angle_offset corrige el sensor
         beam_angles = self._robot_yaw + a + self._laser_offset
 
         hit_x = laser_x + r * np.cos(beam_angles)
@@ -255,15 +242,8 @@ class CostmapNode(Node):
         self._pub.publish(out)
 
     def _inflate_hits(self, hit_rows: np.ndarray, hit_cols: np.ndarray):
-        """
-        Infla únicamente las celdas hit del LiDAR en _dynamic_grid.
-        Mucho más rápido que inflar el grid entero porque solo itera
-        sobre N_hits celdas en vez de H×W.
-
-        Para un cilindro de ~30 hits y r=20px:
-          30 hits × 1257 offsets = 37k operaciones  ← rápido
-          vs 264k celdas × 1257 offsets             ← lento (lo anterior)
-        """
+        """Infla solo las celdas hit del LiDAR en _dynamic_grid (mucho más
+        rápido que inflar el grid entero)."""
         H, W  = self._dynamic_grid.shape
         r_px  = int(math.ceil(self._dyn_r_inf / self._map_res))
 
@@ -293,15 +273,8 @@ class CostmapNode(Node):
 
     def _inflate(self, grid: np.ndarray, resolution: float,
                  radius: float) -> np.ndarray:
-        """
-        Dilata cada celda ocupada (100) o desconocida (-1) un radio
-        en metros, marcando las celdas libres vecinas como 99.
-
-        Algoritmo: desplazamiento de máscara por offset circular.
-        Para cada (Δfila, Δcol) dentro del círculo de radio r_px celdas,
-        desplaza la máscara fuente y escribe 99 en el destino libre.
-        Solo numpy: sin scipy, sin cv2.
-        """
+        """Dilata celdas ocupadas (100) o desconocidas (-1) un radio en
+        metros, marcando libres vecinas como 99 (solo numpy)."""
         H, W  = grid.shape
         r_px  = int(math.ceil(radius / resolution))
 
@@ -331,16 +304,8 @@ class CostmapNode(Node):
 
     def _world_to_cell_v(self, xs: np.ndarray,
                           ys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Convierte arrays de coordenadas mundo (xs, ys) a índices de celda
-        (cols, rows) del OccupancyGrid, teniendo en cuenta la rotación del mapa.
-
-        Fórmula inversa de la conversión pixel→mundo usada en mcl_node:
-          dx = x - origen_x
-          dy = y - origen_y
-          col = (dx·cos + dy·sin) / res
-          row = (−dx·sin + dy·cos) / res
-        """
+        """Convierte coordenadas mundo (xs, ys) a índices de celda (cols, rows),
+        considerando la rotación del mapa (inversa de mcl_node)."""
         dx = xs - self._map_ox
         dy = ys - self._map_oy
         cols = (dx * self._map_cos + dy * self._map_sin) / self._map_res

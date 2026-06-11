@@ -104,12 +104,8 @@ class OccupancyGridNode(Node):
         return 0 <= row < self.size and 0 <= col < self.size
 
     def _raytrace(self, r0: int, c0: int, r1: int, c1: int):
-        """
-        Return (rows, cols) for all grid cells along the segment (r0,c0)→(r1,c1).
-
-        Uses np.linspace interpolation — vectorised, equivalent to Bresenham.
-        Cells outside the grid are silently dropped.
-        """
+        """Cells along (r0,c0)→(r1,c1) via np.linspace (vectorised Bresenham);
+        out-of-bounds cells dropped."""
         n = max(abs(r1 - r0), abs(c1 - c0)) + 1
         rows = np.round(np.linspace(r0, r1, n)).astype(int)
         cols = np.round(np.linspace(c0, c1, n)).astype(int)
@@ -117,14 +113,7 @@ class OccupancyGridNode(Node):
         return rows[valid], cols[valid]
 
     def _publish_map(self):
-        """
-        Convert log-odds grid to ROS OccupancyGrid and publish.
-
-        Conversion:
-          probability = 1 - 1/(1 + exp(log_odds))   ← inverse logit
-          ROS value   = round(probability * 100)      ← 0=free, 100=occupied
-          Unknown     = -1  (cells never visited)
-        """
+        """Convierte log-odds → OccupancyGrid (prob=inv-logit, 0-100; -1=no visitado)."""
         prob = 1.0 - 1.0 / (1.0 + np.exp(self.log_odds))
 
         data = np.full((self.size, self.size), -1, dtype=np.int8)

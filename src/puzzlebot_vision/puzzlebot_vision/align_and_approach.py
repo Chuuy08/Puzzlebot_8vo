@@ -33,9 +33,8 @@ class AlignAndApproach(Node):
             self.image_callback,
             10
         )
-        # /odom para el tramo ciego (dead-reckoning, ver _blind_traveled). QoS
-        # debe ser BEST_EFFORT/VOLATILE como lo publica el robot -- con
-        # RELIABLE rclpy nunca entrega los mensajes y _blind_traveled queda en 0.
+        # /odom para dead-reckoning en BLIND. QoS debe ser BEST_EFFORT/VOLATILE
+        # (con RELIABLE no llegan mensajes y _blind_traveled queda en 0).
         odom_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -57,10 +56,8 @@ class AlignAndApproach(Node):
         self.class_ID = 3  # 'pallet': prioridad sobre QR en find_target (bbox más grande/estable)
         self.qr_class_IDs = (4, 5)  # 'qr' y 'qr-code': mismo QR físico, etiquetado inconsistente en el dataset
 
-        # Phase 1 (ALIGNING) por RÁFAGAS, no P continuo: el motor tiene zona
-        # muerta + fricción estática, así que un P continuo oscila sin
-        # converger en un pasillo corto. En su lugar: ráfaga corta a
-        # velocidad fija, parada total (frame nítido), remedir, repetir.
+        # Phase 1 (ALIGNING) por RÁFAGAS, no P continuo (el motor tiene zona
+        # muerta y oscilaría): ráfaga corta, parada total, remedir, repetir.
         self.ALIGN_ERROR_THRESHOLD = 0.08
         self.ALIGN_PULSE_ANGULAR = 0.14       # rad/s de cada ráfaga
         self.ALIGN_PULSE_GAIN = 0.3           # duración ∝ |error_x|
@@ -68,31 +65,23 @@ class AlignAndApproach(Node):
         self.ALIGN_PULSE_MAX_DURATION = 0.45  # s -- techo: ningún pulso gira de más en el pasillo angosto
         self.ALIGN_SETTLE_DURATION = 0.30     # s de pausa tras cada ráfaga antes de remedir
 
-        # Anti-oscilación: el piso de duración sobre-corrige errores chicos
-        # (overshoot en zigzag). Si el signo de la ráfaga se invierte respecto
-        # a la anterior, se encoge la duración geométricamente; se restablece
-        # a 1.0 al converger, para que la próxima corrección arranque a tope.
+        # Anti-oscilación: si el signo de la ráfaga se invierte (overshoot),
+        # encoge la duración geométricamente; se resetea a 1.0 al converger.
         self.ALIGN_OVERSHOOT_DAMPING = 0.5
 
-        # Máquina de pulsos (estado persiste entre frames, ver _reset_phase_state):
-        #   MEASURE -> mide error y decide si lanza pulso
-        #   PULSE   -> gira a velocidad fija una duración acotada
-        #   SETTLE  -> se detiene para que cámara/robot se asienten
+        # Máquina de pulsos: MEASURE (mide y decide) -> PULSE (gira tiempo
+        # acotado) -> SETTLE (pausa para asentar). Estado en _reset_phase_state.
 
-        # Phase 2 (APPROACHING): avanza usando el área del bbox como proxy de
-        # distancia, con corrección angular leve para mantenerse centrado.
+        # Phase 2 (APPROACHING): avanza según área del bbox (proxy de
+        # distancia), con corrección angular leve para mantenerse centrado.
         self.TARGET_AREA_RATIO = 0.35
         self.Kp_approach_linear = 0.6
         self.Kp_approach_correction = 0.1
 
-        # Phase 3 (tramo final CIEGO): de cerca el bbox
-        # se recorta contra los bordes o sale del FOV, así que el tramo final
-        # se recorre por dead-reckoning desde un "punto de compromiso"
-        # detectado por visión (área/bordes, sostenido COMMIT_STABILITY_FRAMES
-        # frames para filtrar ruido) hasta BLIND_APPROACH_DISTANCE -- una
-        # distancia FIJA y CORTA calibrada en campo (a menor tramo, menos
-        # importa la deriva de odometría). "Pasarse" es lo peligroso, así que
-        # se calibra con sesgo conservador (promedio medido menos colchón).
+        # Phase 3 (CIEGO): de cerca el bbox sale del FOV, así que el tramo
+        # final se recorre por odometría desde un "punto de compromiso"
+        # (área/bordes sostenidos COMMIT_STABILITY_FRAMES frames) hasta
+        # BLIND_APPROACH_DISTANCE -- corta y calibrada con sesgo conservador.
         self.COMMIT_STABILITY_FRAMES = 5
 
         self.BLIND_APPROACH_AREA_RATIO = 0.22  # área que marca "zona de compromiso" (< TARGET_AREA_RATIO)
@@ -104,40 +93,28 @@ class AlignAndApproach(Node):
         # Red de seguridad temporal si /odom no llega o el robot se atasca.
         self.BLIND_APPROACH_TIMEOUT = (self.BLIND_APPROACH_DISTANCE / self.BLIND_APPROACH_LINEAR) * 2.5
 
-        # Red de seguridad: si ya está alineado (error_x dentro de umbral) pero
-        # near_commit (área/borde) nunca se cumple -- o si tras alinearse se
-        # pierde el target sin haber llegado a near_commit -- el robot se
-        # quedaría congelado para siempre sin publicar ARRIVED. Para entonces
-        # los forks ya están arriba (SEND_DETECCION ya se mandó), así que tras
-        # este tiempo se fuerza el tramo final ciego de todos modos: es más
-        # seguro que abortar la misión por WAITING_ALIGNMENT con los forks
-        # levantados.
+        # Red de seguridad: si queda alineado pero nunca confirma near_commit
+        # (o lo pierde sin llegar), tras este tiempo fuerza el tramo ciego de
+        # todos modos -- mejor eso que quedar congelado con los forks arriba.
         self.STUCK_NEAR_TIMEOUT = 4.0  # s
 
-        # Fases de _approach_phase: 'VISION' -> 'BLIND' (odometría) -> 'DONE'
-        # (publica /alineation/booleano=True). BLIND/DONE tienen prioridad
-        # absoluta -- la visión deja de decidir nada. (init en _reset_phase_state)
+        # _approach_phase: 'VISION' -> 'BLIND' (odometría) -> 'DONE' (publica
+        # /alineation/booleano=True). BLIND/DONE tienen prioridad absoluta.
 
-        # _target_locked: una vez confirmado el QR, perderlo de vista no debe
-        # frenar la misión -- comprometerse al tramo ciego es más seguro que
-        # quedarse plantado, siempre que ya estuviéramos cerca del punto de
-        # compromiso (ver _last_good_near_commit). (init en _reset_phase_state)
+        # _target_locked: confirmado el QR, perderlo de vista no frena la
+        # misión -- si ya estaba cerca del compromiso, se va al tramo ciego.
 
-        # TARGET_LOST_GRACE: un solo frame sin detección (blur, glare) no debe
-        # bastar para comprometerse al tramo ciego (produciría un "ARRIVED"
-        # falso). Se tolera la pérdida hasta este tiempo pausando sin
-        # comprometerse. CALIBRAR: > un parpadeo típico de YOLO, < pérdida real.
+        # TARGET_LOST_GRACE: un frame sin detección (blur/glare) no compromete
+        # al tramo ciego; se pausa hasta este tiempo. CALIBRAR según YOLO.
         self.TARGET_LOST_GRACE = 0.4  # s
 
         self.MAX_LINEAR = 0.05
-        # Debe ser >= ALIGN_PULSE_ANGULAR (0.14): si quedara por debajo,
-        # np.clip recortaría cada pulso de vuelta a la zona muerta del motor,
-        # reintroduciendo el stick-slip que las ráfagas evitan.
+        # Debe ser >= ALIGN_PULSE_ANGULAR (0.14) o np.clip recortaría los
+        # pulsos a la zona muerta del motor, reintroduciendo stick-slip.
         self.MAX_ANGULAR = 0.15
 
-        # El nodo se reutiliza para las 4 áreas de pickup de mission_manager
-        # -- sin resetear, tras la primera llegada las siguientes reportarían
-        # "ARRIVED" fantasma. Se reinvoca desde _reset_callback en cada intento.
+        # Reutilizado para las 4 áreas de pickup; sin reset reportaría
+        # "ARRIVED" fantasma en los siguientes intentos (ver _reset_callback).
         self._reset_phase_state(target_confirmed=False)
 
         self.reset_subscription = self.create_subscription(
@@ -147,15 +124,10 @@ class AlignAndApproach(Node):
             10
         )
 
-        # Activo SOLO durante la aproximación final (mission_manager lo pone
-        # en True justo antes de SEND_DETECCION y en False al confirmar
-        # /alineation/booleano). Mientras está en False (barrido, navegación,
-        # etc.) la percepción (YOLO + decode QR + /pallet_detected,
-        # /pallet_has_qr, /pallet_qr_content) sigue corriendo -- el barrido
-        # de mission_manager depende de ella -- pero la máquina de fases de
-        # alineación/aproximación NO avanza y este nodo NO publica /cmd_vel,
-        # para no competir con los giros del barrido (eso hacía que el
-        # robot se pasara del pallet correcto antes de poder muestrearlo).
+        # Activo SOLO en la aproximación final (mission_manager: True antes de
+        # SEND_DETECCION, False al confirmar /alineation/booleano). En False
+        # la percepción (YOLO/QR/topics) sigue corriendo para el barrido, pero
+        # la máquina de fases no avanza ni se publica /cmd_vel.
         self._active = False
         self.create_subscription(
             Bool, '/align_and_approach/active', self._active_callback, 10)
@@ -164,15 +136,13 @@ class AlignAndApproach(Node):
 
     def _active_callback(self, msg: Bool):
         if self._active and not msg.data:
-            # Cede /cmd_vel: publica un Twist() para no dejar el último
-            # comando "pegado" si justo en este instante no era cero.
+            # Cede /cmd_vel publicando Twist() para no dejar el último comando pegado.
             self.vel_pub.publish(Twist())
         self._active = msg.data
 
     def _reset_phase_state(self, target_confirmed: bool = False):
-        """Reinicia el estado de fases para un nuevo intento de aproximación.
-        target_confirmed viene de mission_manager, que ya verificó el QR
-        durante el barrido -- confiar en eso evita re-confirmarlo en movimiento."""
+        """Reinicia fases para un nuevo intento. target_confirmed viene de
+        mission_manager (QR ya verificado en el barrido)."""
         now = self.get_clock().now()
 
         self._align_phase = 'MEASURE'
@@ -236,12 +206,8 @@ class AlignAndApproach(Node):
             return None
 
     def find_target(self, results, h, w):
-        """Prioridad PALLET: pallet+QR emparejados -> objetivo=pallet (bbox
-        más estable); solo QR -> fallback=QR; solo pallet ya con _target_locked
-        -> fallback=pallet MÁS CERCANO a _locked_center (el QR suele salir
-        del FOV primero al acercarse, y puede haber otros pallets sin QR en
-        cuadro -- sin esto, el robot podía saltar a cualquiera de ellos e
-        ignorar el que ya había identificado por QR).
+        """Prioridad: pallet+QR emparejados -> pallet; solo QR -> QR; solo
+        pallet con _target_locked -> pallet más cercano a _locked_center.
         Retorna (target_box, qr_box, paired) o (None, None, False)."""
         boxes_pallet, boxes_qr = [], []
         for box in results[0].boxes:
@@ -296,9 +262,8 @@ class AlignAndApproach(Node):
             qr_text = None
 
             if paired:
-                # Pallet+QR emparejados por geometría -> ya sabemos que tiene
-                # QR sin necesidad de decodificarlo (más robusto que
-                # pyzbar/cv2, que exigen buena resolución/foco/ángulo).
+                # Pallet+QR emparejados por geometría: ya sabemos que tiene QR
+                # sin decodificarlo (más robusto que pyzbar/cv2).
                 if not self._target_locked:
                     self.get_logger().info(
                         'Target LOCKED (pallet+QR emparejados por geometría)')
@@ -312,18 +277,16 @@ class AlignAndApproach(Node):
                         self.get_logger().info(f'QR: {qr_text}')
                         self._target_locked = True
 
-            # Percepción: estos topics los consume mission_manager durante el
-            # barrido (con self._active=False) para decidir a qué pN ir, así
-            # que se publican SIEMPRE, sin importar self._active.
+            # mission_manager consume estos topics durante el barrido
+            # (self._active=False) para decidir a qué pN ir; se publican SIEMPRE.
             self.det_pub.publish(Bool(data=detected))
             self.qr_flag_pub.publish(Bool(data=qr_text is not None))
             if qr_text is not None:
                 self.qr_content_pub.publish(String(data=qr_text))
 
             if not self._active:
-                # Fuera de la aproximación final (barrido, navegación, etc.):
-                # no avanzar la máquina de fases ni tocar /cmd_vel -- ver
-                # _active_callback / comentario en __init__.
+                # Fuera de la aproximación final: no avanzar fases ni tocar
+                # /cmd_vel (ver _active_callback).
                 self.alineacion_pub.publish(Bool(data=False))
                 self.publish(annotated_frame, align_frame)
                 return
@@ -421,10 +384,8 @@ class AlignAndApproach(Node):
                         self._align_pulse_sign * self.ALIGN_PULSE_ANGULAR, -self.MAX_ANGULAR, self.MAX_ANGULAR))
 
                 else:
-                    # Ya alineado (mutuamente excluyente con la máquina de
-                    # pulsos -- debe vivir aquí o pisa su twist_msg). Zona de
-                    # compromiso = área cerca del umbral o bbox tocando bordes,
-                    # sostenida COMMIT_STABILITY_FRAMES frames para filtrar ruido.
+                    # Ya alineado. Zona de compromiso = área cerca del umbral
+                    # o bbox tocando bordes, sostenida COMMIT_STABILITY_FRAMES.
                     near_commit = (area_ratio >= self.BLIND_APPROACH_AREA_RATIO or near_edge)
                     self._last_good_near_commit = near_commit
                     self._commit_streak = (self._commit_streak + 1) if near_commit else 0
@@ -449,8 +410,7 @@ class AlignAndApproach(Node):
 
                     else:
                         # Control P por área/centrado; TARGET_AREA_RATIO solo
-                        # regula velocidad, no es criterio de llegada (eso
-                        # vive únicamente en BLIND/odometría).
+                        # regula velocidad, no es criterio de llegada.
                         state = ('APPROACHING' if not near_commit else
                                  f'APPROACHING (confirmando commit {self._commit_streak}/{self.COMMIT_STABILITY_FRAMES})')
                         area_error = self.TARGET_AREA_RATIO - area_ratio
@@ -489,8 +449,7 @@ class AlignAndApproach(Node):
                                     0.7, (255, 255, 0), 2)
                         self.get_logger().info(state)
                     elif self._last_good_near_commit:
-                        # Pérdida real, pero ya estábamos en zona de compromiso
-                        # -> BLIND_APPROACH_DISTANCE sigue siendo válida desde ahí
+                        # Pérdida real, pero ya en zona de compromiso -> BLIND_APPROACH_DISTANCE sigue válida
                         self._enter_blind(now)
                         state = 'APPROACHING (target perdido cerca del compromiso -> tramo final ciego por odometría)'
                         twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
@@ -500,9 +459,7 @@ class AlignAndApproach(Node):
                         self.get_logger().warn(f'{state} -> linear={twist_msg.linear.x:.3f}')
                     elif (self._near_aligned_since is not None
                           and (now - self._near_aligned_since).nanoseconds / 1e9 >= self.STUCK_NEAR_TIMEOUT):
-                        # Ya estaba alineado antes de perderse y lleva
-                        # STUCK_NEAR_TIMEOUT sin recuperar visión ni confirmar
-                        # commit -> forzar tramo final ciego (ver STUCK_NEAR_TIMEOUT).
+                        # Alineado antes de perderse y sin recuperar tras STUCK_NEAR_TIMEOUT -> forzar tramo ciego
                         self._enter_blind(now)
                         state = 'APPROACHING (perdido tras alinear, timeout -> tramo final ciego)'
                         twist_msg.linear.x = self.BLIND_APPROACH_LINEAR
@@ -511,9 +468,7 @@ class AlignAndApproach(Node):
                                     0.7, (0, 165, 255), 2)
                         self.get_logger().warn(state)
                     else:
-                        # Lejos del punto de compromiso: sin LiDAR no se sabe
-                        # cuánto falta, mejor pausar y esperar a recuperar visión
-                        # (si persiste, WAITING_ALIGNMENT en mission_manager aborta).
+                        # Lejos del compromiso: pausar y esperar visión (si persiste, WAITING_ALIGNMENT aborta)
                         state = f'LOCKED (perdido lejos del punto de compromiso hace {lost_for:.1f}s -- pausando, esperando recuperar visión)'
                         twist_msg.linear.x = 0.0
                         twist_msg.angular.z = 0.0

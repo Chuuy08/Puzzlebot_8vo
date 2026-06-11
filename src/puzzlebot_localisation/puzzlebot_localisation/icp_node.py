@@ -208,10 +208,8 @@ class ICPNode(Node):
             corr_xy = K2 @ np.array([dx, dy])
             self.ekf_cov_2d = (np.eye(2) - K2) @ P2
 
-            # ── θ EKF — small gain to slowly correct heading drift ───
-            # R_theta is 25× larger than R_xy so the gain is much smaller.
-            # This prevents sudden map rotations while still correcting
-            # accumulated heading error over many scans.
+            # ── θ EKF: R_theta 25x mayor que R_xy → ganancia pequeña, corrige
+            # drift de heading lentamente sin rotar el mapa de golpe.
             p_th = max(self.odom_cov[2, 2] - self.ref_cov[2, 2], 1e-6)
             r_th = (s * 5.0) ** 2
             k_th = p_th / (p_th + r_th)
@@ -308,9 +306,8 @@ class ICPNode(Node):
         tf_vis.transform.rotation.w    = qw
         self.tf_br.sendTransform(tf_vis)
 
-        # map → odom  (main TF chain — needed for fixed frame 'map' in RViz)
-        # T_map_odom = T_map_basefoot * inv(T_odom_basefoot)
-        # Published always (identity until odom arrives) so 'map' appears in RViz immediately.
+        # map → odom (TF principal): T_map_odom = T_map_basefoot * inv(T_odom_basefoot)
+        # Se publica siempre (identidad hasta que llega odom).
         op = self.odom_pose if self.odom_pose is not None else np.zeros(3)
         dth = wrap_angle(th - op[2])
         c_d, s_d = math.cos(dth), math.sin(dth)

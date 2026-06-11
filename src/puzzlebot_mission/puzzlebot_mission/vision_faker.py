@@ -1,37 +1,17 @@
 #!/usr/bin/env python3
 """
-vision_faker.py — Publica señales falsas de visión para probar mission_manager
-en simulación, donde Gazebo no tiene pallets ni QR reales (son sólidos
-rectangulares / paredes).
-
-Topics publicados (mismos nombres que align_and_approach/tracking, así que
-mission_manager no distingue entre la fuente real y esta simulada):
-  /pallet_detected      (std_msgs/Bool)
-  /pallet_has_qr        (std_msgs/Bool)
-  /pallet_qr_content    (std_msgs/String)
-  /alineation/booleano  (std_msgs/Bool)
+vision_faker.py — Publica señales falsas de visión (/pallet_detected,
+/pallet_has_qr, /pallet_qr_content, /alineation/booleano) para probar
+mission_manager en simulación (Gazebo no tiene pallets/QR reales).
 
 Comandos (terminal interactiva):
-  pallet clienteN   -> simula pallet+QR detectados con contenido 'clienteN'
-                       (p.ej. 'pallet cliente2') — escríbelo cuando el robot
-                       esté detenido en la parada de barrido que quieres que
-                       "tenga" el pallet
-  nopallet          -> simula parada vacía (sin pallet/QR) — para las demás
-                       paradas del barrido
-  align on          -> simula que /alineation/booleano confirmó la alineación
-                       fina (avanza mission_manager de WAITING_ALIGNMENT a
-                       WAITING_LOAD) — escríbelo cuando el robot llegue al
-                       waypoint del pallet
-  align off         -> vuelve a 'sin confirmar' (por si quieres reiniciar la prueba)
+  pallet clienteN   -> simula pallet+QR con contenido 'clienteN'
+  nopallet          -> simula parada vacía
+  align on/off      -> simula confirmación de alineación fina
   salir             -> termina
 
-Reinicio automático entre áreas: mission_manager anuncia el inicio de cada
-barrido en /mission_sweep_area (ver _start_sweep) — este nodo lo escucha y
-reinicia solo su estado simulado a 'sin pallet / sin alinear' cada vez que
-empieza un área nueva, para no arrastrar por accidente el "pallet cliente2"
-de un área a la siguiente (como pasaba al probar manualmente la búsqueda
-rack1->rack2->rack3). Sigue pudiéndose sobreescribir con los comandos de
-arriba en cualquier momento, igual que antes.
+Al iniciar cada barrido (/mission_sweep_area) reinicia el estado simulado a
+'sin pallet / sin alinear' para no arrastrar el de un área a otra.
 
 Uso:
   ros2 run puzzlebot_mission vision_faker
@@ -66,16 +46,10 @@ class VisionFaker(Node):
         self._qr_content = ''
         self._aligned = False
 
-        # Reinicio automático al cambiar de área (ver _cb_sweep_area) — evita
-        # arrastrar por accidente el último "pallet clienteN"/"align on" de
-        # un área a la siguiente cuando se prueba manualmente la búsqueda
-        # rack1->rack2->rack3.
+        # Reinicia el estado simulado al iniciar cada barrido (ver _cb_sweep_area).
         self.create_subscription(String, '/mission_sweep_area', self._cb_sweep_area, _RELIABLE)
 
-        # Publica el estado actual a 10 Hz — mission_manager solo recuerda el
-        # último valor recibido de cada topic, pero conviene refrescarlo
-        # seguido para que las muestras del barrido (5 lecturas a 10 Hz tras
-        # el asentamiento) siempre vean el valor vigente.
+        # Publica a 10 Hz para que las muestras del barrido siempre vean el valor vigente.
         self.create_timer(0.1, self._publish_current_state)
 
         self.get_logger().info(
@@ -86,12 +60,8 @@ class VisionFaker(Node):
         self._input_thread.start()
 
     def _cb_sweep_area(self, msg: String):
-        """mission_manager anunció el inicio de un barrido nuevo (ver
-        _start_sweep) → reinicia el estado simulado a 'sin pallet / sin
-        alinear', como si se hubiera mandado 'nopallet' + 'align off'.
-        Así cada área arranca en blanco y hay que comandar explícitamente
-        el pallet (y la alineación) que se quiera simular para ESA área,
-        sin arrastrar el de la anterior por descuido."""
+        """Inicio de barrido nuevo → reinicia a 'sin pallet / sin alinear'
+        (equivale a 'nopallet' + 'align off'), para que cada área arranque en blanco."""
         if not (self._detected or self._has_qr or self._qr_content or self._aligned):
             return  # ya estaba en blanco — no ensuciar la consola con ruido
         self._detected = False

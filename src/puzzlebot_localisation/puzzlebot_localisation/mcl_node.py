@@ -257,10 +257,9 @@ class MCLNode(Node):
 
         rot1 = wrap_angle(math.atan2(dy, dx) - self.prev_odom[2]) if trans > 1e-4 else 0.0
 
-        # Backward-motion fix (Thrun, Probabilistic Robotics p.136):
-        # When |rot1| > π/2 the robot moved backward.  Representing it as a
-        # large initial rotation inflates sigma_rot1 to ~57° and scatters all
-        # particles.  Flip to: small rot1 + negative trans + same rot2.
+        # Fix reversa (Thrun p.136): |rot1|>π/2 = movimiento hacia atrás;
+        # tratarlo como gran rotación inicial dispersaría las partículas.
+        # En vez de eso: rot1 pequeño + trans negativo + mismo rot2.
         if abs(rot1) > math.pi / 2:
             trans = -trans
             rot1  = wrap_angle(rot1 + math.pi)
@@ -324,9 +323,8 @@ class MCLNode(Node):
 
             log_w += np.log(np.maximum(p, 1e-300))
 
-        # Penalize particles in obstacle cells BEFORE computing quality.
-        # A wall-hugging particle scores well by projecting beams onto neighboring
-        # walls, which inflates quality and causes false convergence detections.
+        # Penalizar partículas en celdas de obstáculo ANTES de calcular quality
+        # (si no, una partícula pegada a la pared infla quality artificialmente).
         dx_p  = self.particles[:, 0] - self.map_origin[0]
         dy_p  = self.particles[:, 1] - self.map_origin[1]
         p_col = (( dx_p * self.map_cos + dy_p * self.map_sin) / self.map_res).astype(int)
@@ -363,9 +361,8 @@ class MCLNode(Node):
         cov_y  = float(np.dot(self.weights, dy_p * dy_p))
         pos_spread = math.sqrt(cov_x + cov_y)
 
-        # Convergence requires BOTH good scan quality AND tight particle cluster.
-        # Evaluated after covariance — prevents false positives where quality spikes
-        # momentarily on geometrically ambiguous positions (symmetric corridors, etc).
+        # Converge solo si quality alta Y partículas agrupadas (evita falsos
+        # positivos por picos de quality en posiciones ambiguas/simétricas).
         if not self._converged and quality > self._CONVERGE_THRESH and pos_spread < self._CONVERGE_MAX_SPREAD:
             self._converged = True
             self.conv_pub.publish(Bool(data=True))
@@ -387,7 +384,7 @@ class MCLNode(Node):
         else:
             p_rand = 0.0
 
-        # Inject fewer random particles when converged — 2% floor, 5% floor otherwise.
+        # Piso de partículas aleatorias: 2% si convergido, 5% si no.
         min_frac = 0.02 if self._converged else 0.05
         n_rand_min = max(1, int(self.N * min_frac))
         n_rand = max(n_rand_min, int(self.N * p_rand))
@@ -435,9 +432,7 @@ class MCLNode(Node):
         q   = msg.pose.pose.orientation
         yaw = quat_to_yaw(q)
 
-        # Always respect the arrow direction drawn in RViz — the user is explicitly
-        # specifying both position and orientation.  Using math.pi as the angular
-        # spread was ignoring the arrow and producing random orientations.
+        # Respeta la flecha del "2D Pose Estimate" de RViz (posición + orientación).
         self._seed_particles_around(x, y, yaw, self._spread_xy, self._spread_a)
         mode_str = (f'spread_xy={self._spread_xy}m '
                     f'spread_a={math.degrees(self._spread_a):.0f}°')

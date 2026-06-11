@@ -16,25 +16,17 @@ _LOCALIZED = 'LOCALIZED'
 
 
 class ActiveLocalizationNode(Node):
-    """
-    Nodo de localización activa para simulación.
+    """Localización activa para simulación.
 
-    WANDERING: mueve el robot con evasión reactiva de obstáculos e inyección
-               de giros aleatorios para que MCL acumule odometría informativa
-               y converja más rápido.
-    LOCALIZED: para publicar cmd_vel y cede el control al stack de navegación
-               (DWA + path_follower).  El robot espera un 2D Goal Pose en RViz.
+    WANDERING: evasión reactiva + giros aleatorios para que MCL converja rápido.
+    LOCALIZED: cede /cmd_vel al stack de navegación (DWA + path_follower);
+               espera un 2D Goal Pose en RViz.
 
-    Transitions:
-      WANDERING → LOCALIZED  cuando /mcl_converged=True durante >= convergence_hold_time
-      LOCALIZED → WANDERING  cuando /mcl_converged=False (MCL perdió localización)
-                             → publica /cancel_navigation para resetear path_follower
+    WANDERING -> LOCALIZED cuando /mcl_converged=True por >= convergence_hold_time.
+    LOCALIZED -> WANDERING cuando /mcl_converged=False (publica /cancel_navigation).
 
-    El topic /mcl_wandering (Bool, latch) indica a dwa_node que ceda /cmd_vel.
-    Un heartbeat a 2 Hz garantiza que nuevos subscribers reciban el estado actual.
-    Un timeout configurable emite warnings si MCL no converge a tiempo, pero
-    el robot sigue wandering — no se detiene solo por timeout.
-    """
+    /mcl_wandering (Bool, heartbeat 2 Hz) indica a dwa_node si debe ceder /cmd_vel.
+    Si MCL no converge antes de wander_timeout solo se emite un warning."""
 
     def __init__(self):
         super().__init__('active_localization_node')
@@ -74,14 +66,10 @@ class ActiveLocalizationNode(Node):
         self._conv_since   = None     # tiempo en que MCL reportó convergencia por primera vez
         self._wander_start = self._now()
 
-        # Evidencia de movimiento acumulada mientras MCL reporta convergencia.
-        # Exigir traslación >= min_conv_travel_m Y rotación >= min_conv_rotation_deg
-        # antes de declarar LOCALIZED.
-        #
-        # La rotación es el discriminador clave contra ambigüedad de 180°:
-        # si el robot está rotado 180° respecto a la posición real, al girar ~90°
-        # los obstáculos internos del mapa aparecerán en el lado equivocado del scan
-        # → MCL pierde convergencia → ambos contadores se reinician.
+        # Exige traslación >= min_conv_travel_m Y rotación >= min_conv_rotation_deg
+        # mientras MCL converge antes de declarar LOCALIZED — la rotación
+        # descarta la ambigüedad de 180° (al girar ~90° en orientación errónea,
+        # MCL pierde convergencia y ambos contadores se reinician).
         self._travel_while_conv  = 0.0
         self._rotation_while_conv = 0.0
         self._pose_x: float | None = None
@@ -195,14 +183,9 @@ class ActiveLocalizationNode(Node):
     def _control_loop(self):
         now = self._now()
 
-        # Transición WANDERING → LOCALIZED: los tres criterios deben cumplirse simultáneamente:
-        #   1. Tiempo: MCL reporta convergencia >= hold_time segundos sin interrupción
-        #   2. Traslación: robot recorrió >= min_travel metros mientras convergía
-        #   3. Rotación: robot rotó >= min_rot_rad acumulados mientras convergía
-        #
-        # La rotación es el discriminador clave para la ambigüedad de 180°:
-        # en la orientación incorrecta, rotar ~90° hace que los obstáculos internos
-        # aparezcan en el lado equivocado del scan → MCL pierde convergencia → reset.
+        # WANDERING → LOCALIZED requiere simultáneamente: hold_time de
+        # convergencia continua, >= min_travel recorridos y >= min_rot_rad
+        # rotados (descarta ambigüedad de 180°, ver arriba).
         if self._state == _WANDERING:
             if (self._mcl_conv
                     and self._conv_since is not None
