@@ -7,13 +7,19 @@ Proyecto final de carrera. Robot móvil diferencial (PuzzleBot, Manchester Robot
 ## Demostración
 
 **Pipeline completo (misión end-to-end):**
-<!-- Subir video directamente aquí arrastrando un .mp4 en el editor de GitHub -->
+
+https://github.com/user-attachments/assets/660581aa-b5cc-4cc7-9d33-5c598ae701eb
+
 
 **Evasión de obstáculos (DWA):**
-<!-- Subir video directamente aquí arrastrando un .mp4 en el editor de GitHub -->
+
+https://github.com/user-attachments/assets/7568d9c5-fc85-4f19-9c41-8e2e6caeafe5
+
 
 **Construcción de mapa (SLAM):**
-<!-- Subir video directamente aquí arrastrando un .mp4 en el editor de GitHub -->
+
+https://github.com/user-attachments/assets/5981540a-3960-4df0-a4d0-4142da38af56
+
 
 ---
 
